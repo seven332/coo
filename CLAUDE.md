@@ -18,11 +18,11 @@ you-mind is a headless AI agent CLI written in Rust, designed to run in sandbox 
 
 ## Architecture
 
-**Agent loop** (`src/agent.rs`): The core loop. Sends messages to the LLM, receives streaming chunks, executes tool calls, appends results back to the conversation, and repeats until the model stops requesting tools or hits max iterations.
+**Agent loop** (`src/agent.rs`): The core loop. Sends messages to the LLM, receives streaming chunks, executes tool calls, appends results back to the conversation, and repeats until the model stops requesting tools or hits max iterations. Uses `Arc<dyn Provider>` and `Arc<ToolRegistry>` to support sub-agent spawning.
 
-**Provider abstraction** (`src/provider/`): The `Provider` trait defines `async fn request(&self, req, tx)` where `tx` is an mpsc channel for streaming `Chunk` events. Each LLM backend implements this trait. Currently only Anthropic SSE streaming is implemented (`anthropic.rs`).
+**Provider abstraction** (`src/provider/`): The `Provider` trait defines `async fn request(&self, req, tx)` where `tx` is an mpsc channel for streaming `Chunk` events. Each LLM backend implements this trait. Providers: `AnthropicProvider` (SSE streaming), `MeowProvider` (random test provider).
 
-**Tool system** (`src/tools/`): The `Tool` trait requires `name()`, `description()`, `input_schema()` (JSON Schema), and `async fn call()`. Tools are registered in `ToolRegistry`. Add new tools by implementing the trait and registering in `ToolRegistry::with_defaults()`.
+**Tool system** (`src/tools/`): The `Tool` trait requires `name()`, `description()`, `input_schema()` (JSON Schema), and `async fn call(input, &ToolContext)`. `ToolContext` provides shared access to the provider, tool registry, model config, and depth tracking. Tools are registered in `ToolRegistry::with_defaults()`.
 
 **Message types** (`src/message.rs`): `Message` (role + content blocks), `ContentBlock` (text/tool_use/tool_result/thinking), `ToolResult`, and `StreamEvent` (the NDJSON output events).
 
@@ -36,4 +36,7 @@ Use [Conventional Commits v1.0.0](https://www.conventionalcommits.org/en/v1.0.0/
 
 - Provider streams chunks via `mpsc::Sender<Chunk>` rather than returning a collected response — enables real-time event forwarding.
 - Tool results are sent back to the LLM as a `User` message containing `ToolResult` content blocks (following the Anthropic API conversation format).
+- Provider and ToolRegistry are `Arc`-wrapped for sharing between parent agent and sub-agents spawned by the agent tool.
+- Sub-agent depth is capped (default 5) to prevent infinite recursion.
+- Bash tool uses `kill_on_drop(true)` to prevent orphan processes on timeout.
 - Logs go to stderr (`tracing`), NDJSON events go to stdout — clean separation for piping.
