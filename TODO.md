@@ -6,5 +6,5 @@
 - [x] Glob — find files by pattern
 - [x] Grep — search file contents
 - [x] Agent — spawn sub-agents
-- [ ] WebFetch — fetch web content
+- [x] WebFetch — fetch web content
 - [ ] WebSearch — search the web

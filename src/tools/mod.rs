@@ -4,6 +4,7 @@ mod edit;
 mod glob;
 mod grep;
 mod read;
+mod web_fetch;
 mod write;
 
 pub use agent_tool::AgentTool;
@@ -12,6 +13,7 @@ pub use edit::EditTool;
 pub use glob::GlobTool;
 pub use grep::GrepTool;
 pub use read::ReadTool;
+pub use web_fetch::WebFetchTool;
 pub use write::WriteTool;
 
 use std::sync::Arc;
@@ -83,6 +85,7 @@ impl ToolRegistry {
         reg.register(Box::new(GlobTool));
         reg.register(Box::new(GrepTool));
         reg.register(Box::new(ReadTool));
+        reg.register(Box::new(WebFetchTool::new()));
         reg.register(Box::new(WriteTool));
         reg
     }
@@ -143,6 +146,7 @@ mod tests {
         assert!(reg.get("glob").is_some());
         assert!(reg.get("grep").is_some());
         assert!(reg.get("read").is_some());
+        assert!(reg.get("web_fetch").is_some());
         assert!(reg.get("write").is_some());
         assert!(reg.get("nonexistent").is_none());
     }
@@ -151,7 +155,7 @@ mod tests {
     fn definitions_match_tools() {
         let reg = ToolRegistry::with_defaults();
         let defs = reg.definitions();
-        assert_eq!(defs.len(), 7);
+        assert_eq!(defs.len(), 8);
         let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
         assert!(names.contains(&"agent"));
         assert!(names.contains(&"bash"));
@@ -159,6 +163,7 @@ mod tests {
         assert!(names.contains(&"glob"));
         assert!(names.contains(&"grep"));
         assert!(names.contains(&"read"));
+        assert!(names.contains(&"web_fetch"));
         assert!(names.contains(&"write"));
     }
 }
