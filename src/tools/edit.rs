@@ -65,18 +65,13 @@ impl Tool for EditTool {
 
         let content = match tokio::fs::read_to_string(&input.file_path).await {
             Ok(c) => c,
-            Err(e) => {
-                return ToolResult::error(format!("Failed to read {}: {e}", input.file_path))
-            }
+            Err(e) => return ToolResult::error(format!("Failed to read {}: {e}", input.file_path)),
         };
 
         let count = content.matches(&input.old_string).count();
 
         if count == 0 {
-            return ToolResult::error(format!(
-                "old_string not found in {}",
-                input.file_path
-            ));
+            return ToolResult::error(format!("old_string not found in {}", input.file_path));
         }
 
         if !input.replace_all && count > 1 {

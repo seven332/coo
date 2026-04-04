@@ -100,9 +100,7 @@ mod tests {
     fn tool_result_block_skips_none_error() {
         let block = ContentBlock::ToolResult {
             tool_use_id: "toolu_01".into(),
-            content: vec![ToolResultContent::Text {
-                text: "ok".into(),
-            }],
+            content: vec![ToolResultContent::Text { text: "ok".into() }],
             is_error: None,
         };
         let json = serde_json::to_value(&block).unwrap();
@@ -113,9 +111,7 @@ mod tests {
     fn roundtrip_message() {
         let msg = Message {
             role: Role::User,
-            content: vec![ContentBlock::Text {
-                text: "hi".into(),
-            }],
+            content: vec![ContentBlock::Text { text: "hi".into() }],
         };
         let serialized = serde_json::to_string(&msg).unwrap();
         let deserialized: Message = serde_json::from_str(&serialized).unwrap();
