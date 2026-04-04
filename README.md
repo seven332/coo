@@ -1,0 +1,47 @@
+# you-mind
+
+An AI agent CLI designed for sandbox environments. Similar to Claude Code, but runs headless with NDJSON streaming output — no terminal UI needed.
+
+## Usage
+
+```bash
+# Direct prompt
+you-mind --prompt "list all files in /tmp"
+
+# Read prompt from stdin
+echo "create a hello.py file" | you-mind --stdin
+
+# Custom model and system prompt
+you-mind --prompt "fix the bug" --model claude-sonnet-4-20250514 --system "You are a Rust expert."
+```
+
+Output is streamed as NDJSON (one JSON event per line) to stdout.
+
+## Environment Variables
+
+- `ANTHROPIC_API_KEY` — API key (required)
+- `ANTHROPIC_BASE_URL` — Custom API endpoint
+
+## Event Types
+
+```jsonl
+{"type":"thinking","thinking":"Let me analyze..."}
+{"type":"text","text":"I'll create the file."}
+{"type":"tool_use","id":"toolu_01","name":"bash","input":{"command":"ls"}}
+{"type":"tool_result","tool_use_id":"toolu_01","content":"file1\nfile2","is_error":false}
+{"type":"done","reason":"end_turn"}
+```
+
+## Built-in Tools
+
+| Tool | Description |
+|------|-------------|
+| `bash` | Execute shell commands |
+| `read` | Read files with line numbers |
+| `write` | Write/create files |
+
+## Build
+
+```bash
+cargo build --release
+```
