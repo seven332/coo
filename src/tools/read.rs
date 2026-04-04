@@ -64,6 +64,10 @@ impl Tool for ReadTool {
         let limit = input.limit.unwrap_or(2000);
         let end = (offset + limit).min(lines.len());
 
+        if lines.is_empty() {
+            return ToolResult::success("(empty file)");
+        }
+
         if offset >= lines.len() {
             return ToolResult::error(format!(
                 "Offset {offset} is past end of file ({} lines)",
@@ -130,6 +134,19 @@ mod tests {
         assert!(text.contains("3\tline3"));
         assert!(text.contains("5\tline5"));
         assert!(!text.contains("6\tline6"));
+    }
+
+    #[tokio::test]
+    async fn read_empty_file() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+
+        let tool = ReadTool;
+        let result = tool
+            .call(json!({"file_path": tmp.path().to_str().unwrap()}))
+            .await;
+        assert!(!result.is_error);
+        let text = text_of(&result);
+        assert!(text.contains("empty"));
     }
 
     #[tokio::test]

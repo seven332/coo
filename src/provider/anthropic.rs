@@ -180,14 +180,26 @@ impl Provider for AnthropicProvider {
                         SseEvent::ContentBlockDelta { index, delta } => {
                             if let Some(block) = blocks.get_mut(index) {
                                 match delta {
-                                    Delta::Text { text } => {
-                                        let _ = tx.send(Chunk::Text(text)).await;
+                                    Delta::Text { ref text } => {
+                                        if let ContentBlockInfo::Text {
+                                            text: ref mut accumulated,
+                                        } = block.info
+                                        {
+                                            accumulated.push_str(text);
+                                        }
+                                        let _ = tx.send(Chunk::Text(text.clone())).await;
                                     }
                                     Delta::InputJson { partial_json } => {
                                         block.json_buf.push_str(&partial_json);
                                     }
-                                    Delta::Thinking { thinking } => {
-                                        let _ = tx.send(Chunk::Thinking(thinking)).await;
+                                    Delta::Thinking { ref thinking } => {
+                                        if let ContentBlockInfo::Thinking {
+                                            thinking: ref mut accumulated,
+                                        } = block.info
+                                        {
+                                            accumulated.push_str(thinking);
+                                        }
+                                        let _ = tx.send(Chunk::Thinking(thinking.clone())).await;
                                     }
                                     Delta::Signature { .. } => {}
                                 }

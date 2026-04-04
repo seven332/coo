@@ -31,9 +31,9 @@ struct Cli {
     #[arg(long, env = "ANTHROPIC_BASE_URL")]
     base_url: Option<String>,
 
-    /// API key.
+    /// API key (required, or set ANTHROPIC_API_KEY).
     #[arg(long, env = "ANTHROPIC_API_KEY")]
-    api_key: Option<String>,
+    api_key: String,
 
     /// Max output tokens per LLM call.
     #[arg(long, default_value = "16384")]
@@ -59,13 +59,6 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
-    let api_key = cli.api_key.unwrap_or_else(|| {
-        std::env::var("ANTHROPIC_API_KEY").unwrap_or_else(|_| {
-            eprintln!("Error: ANTHROPIC_API_KEY is required");
-            std::process::exit(1);
-        })
-    });
-
     let prompt = if cli.stdin {
         let mut buf = String::new();
         std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf)?;
@@ -77,7 +70,7 @@ async fn main() -> anyhow::Result<()> {
         std::process::exit(1);
     };
 
-    let provider = AnthropicProvider::new(api_key, cli.base_url);
+    let provider = AnthropicProvider::new(cli.api_key, cli.base_url);
     let tools = ToolRegistry::with_defaults();
     let system = cli.system.unwrap_or_else(|| DEFAULT_SYSTEM.to_string());
 
