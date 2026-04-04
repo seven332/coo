@@ -1,8 +1,10 @@
 mod bash;
+mod edit;
 mod read;
 mod write;
 
 pub use bash::BashTool;
+pub use edit::EditTool;
 pub use read::ReadTool;
 pub use write::WriteTool;
 
@@ -50,6 +52,7 @@ impl ToolRegistry {
     pub fn with_defaults() -> Self {
         let mut reg = Self::new();
         reg.register(Box::new(BashTool));
+        reg.register(Box::new(EditTool));
         reg.register(Box::new(ReadTool));
         reg.register(Box::new(WriteTool));
         reg
@@ -76,6 +79,7 @@ mod tests {
     fn registry_defaults() {
         let reg = ToolRegistry::with_defaults();
         assert!(reg.get("bash").is_some());
+        assert!(reg.get("edit").is_some());
         assert!(reg.get("read").is_some());
         assert!(reg.get("write").is_some());
         assert!(reg.get("nonexistent").is_none());
@@ -85,9 +89,10 @@ mod tests {
     fn definitions_match_tools() {
         let reg = ToolRegistry::with_defaults();
         let defs = reg.definitions();
-        assert_eq!(defs.len(), 3);
+        assert_eq!(defs.len(), 4);
         let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
         assert!(names.contains(&"bash"));
+        assert!(names.contains(&"edit"));
         assert!(names.contains(&"read"));
         assert!(names.contains(&"write"));
     }

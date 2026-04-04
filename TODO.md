@@ -2,7 +2,7 @@
 
 ## Tools to Add
 
-- [ ] Edit — exact string replacement in files
+- [x] Edit — exact string replacement in files
 - [ ] Glob — find files by pattern
 - [ ] Grep — search file contents
 - [ ] Agent — spawn sub-agents
