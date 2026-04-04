@@ -88,7 +88,7 @@ impl Tool for WebFetchTool {
             .client
             .get(&url)
             .header("Accept", "text/html, text/plain, */*")
-            .header("User-Agent", "you-mind/0.1")
+            .header("User-Agent", "coo/0.1")
             .send()
             .await
         {

@@ -163,7 +163,7 @@ mod tests {
         let ctx = crate::tools::dummy_context();
         let result = tool
             .call(
-                json!({"pattern": "*.rs", "path": "/tmp/nonexistent_you_mind_glob_test"}),
+                json!({"pattern": "*.rs", "path": "/tmp/nonexistent_coo_glob_test"}),
                 &ctx,
             )
             .await;
