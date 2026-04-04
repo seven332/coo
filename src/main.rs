@@ -6,7 +6,7 @@ use tracing_subscriber::EnvFilter;
 
 use coo::agent::Agent;
 use coo::message::StreamEvent;
-use coo::provider::{AnthropicProvider, MeowProvider, Provider};
+use coo::provider::{AnthropicProvider, MeowProvider, Provider, ServerTool};
 use coo::tools::ToolRegistry;
 
 #[derive(Parser)]
@@ -39,6 +39,10 @@ struct Cli {
     /// Max output tokens per LLM call.
     #[arg(long, default_value = "16384")]
     max_tokens: u32,
+
+    /// Enable web search (Anthropic provider only).
+    #[arg(long)]
+    web_search: bool,
 
     /// Read prompt from stdin.
     #[arg(long)]
@@ -91,6 +95,12 @@ async fn main() -> anyhow::Result<()> {
 
     let mut agent = Agent::new(provider, tools, cli.model, system);
     agent.max_tokens = cli.max_tokens;
+    if cli.web_search {
+        agent.server_tools.push(ServerTool::WebSearch {
+            name: "web_search".into(),
+            max_uses: Some(8),
+        });
+    }
 
     let (event_tx, mut event_rx) = mpsc::channel::<StreamEvent>(128);
 

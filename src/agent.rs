@@ -4,7 +4,7 @@ use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 use crate::message::{ContentBlock, Message, Role, StreamEvent, ToolResultContent};
-use crate::provider::{Chunk, Provider, Request, StopReason};
+use crate::provider::{Chunk, Provider, Request, ServerTool, StopReason};
 use crate::tools::{ToolContext, ToolRegistry};
 
 pub struct Agent {
@@ -14,6 +14,7 @@ pub struct Agent {
     system: String,
     pub max_tokens: u32,
     pub max_iterations: usize,
+    pub server_tools: Vec<ServerTool>,
     pub depth: usize,
     pub max_depth: usize,
 }
@@ -32,6 +33,7 @@ impl Agent {
             system,
             max_tokens: 16384,
             max_iterations: 100,
+            server_tools: Vec::new(),
             depth: 0,
             max_depth: 5,
         }
@@ -73,6 +75,7 @@ impl Agent {
                 system: self.system.clone(),
                 messages: messages.clone(),
                 tools: tool_defs.clone(),
+                server_tools: self.server_tools.clone(),
                 max_tokens: self.max_tokens,
             };
 

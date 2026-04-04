@@ -33,6 +33,19 @@ pub enum ContentBlock {
         #[serde(skip_serializing_if = "Option::is_none")]
         is_error: Option<bool>,
     },
+    /// Server-side tool use (e.g. web_search). Executed by the provider, not locally.
+    #[serde(rename = "server_tool_use")]
+    ServerToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
+    /// Result from a server-side tool (e.g. web_search).
+    #[serde(rename = "web_search_tool_result")]
+    WebSearchToolResult {
+        tool_use_id: String,
+        content: serde_json::Value,
+    },
     Thinking {
         thinking: String,
     },
@@ -138,6 +151,29 @@ mod tests {
 
         let err = ToolResult::error("fail");
         assert!(err.is_error);
+    }
+
+    #[test]
+    fn serialize_server_tool_use() {
+        let block = ContentBlock::ServerToolUse {
+            id: "stu_01".into(),
+            name: "web_search".into(),
+            input: json!({"query": "rust lang"}),
+        };
+        let json = serde_json::to_value(&block).unwrap();
+        assert_eq!(json["type"], "server_tool_use");
+        assert_eq!(json["name"], "web_search");
+    }
+
+    #[test]
+    fn serialize_web_search_tool_result() {
+        let block = ContentBlock::WebSearchToolResult {
+            tool_use_id: "stu_01".into(),
+            content: json!([{"title": "Rust", "url": "https://rust-lang.org"}]),
+        };
+        let json = serde_json::to_value(&block).unwrap();
+        assert_eq!(json["type"], "web_search_tool_result");
+        assert_eq!(json["tool_use_id"], "stu_01");
     }
 }
 

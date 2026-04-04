@@ -30,7 +30,7 @@ struct ApiRequest<'a> {
     model: &'a str,
     system: &'a str,
     messages: &'a [crate::message::Message],
-    tools: &'a [super::ToolDefinition],
+    tools: Vec<serde_json::Value>,
     max_tokens: u32,
     stream: bool,
 }
@@ -79,6 +79,14 @@ enum ContentBlockInfo {
     },
     #[serde(rename = "tool_use")]
     ToolUse { id: String, name: String },
+    #[serde(rename = "server_tool_use")]
+    ServerToolUse { id: String, name: String },
+    #[serde(rename = "web_search_tool_result")]
+    WebSearchToolResult {
+        tool_use_id: String,
+        #[serde(default)]
+        content: serde_json::Value,
+    },
     #[serde(rename = "thinking")]
     Thinking {
         #[serde(default)]
@@ -119,11 +127,24 @@ struct BlockAccumulator {
 impl Provider for AnthropicProvider {
     async fn request(&self, req: Request, tx: mpsc::Sender<Chunk>) -> anyhow::Result<()> {
         let url = format!("{}/v1/messages", self.base_url);
+
+        // Merge regular tools and server tools into a single JSON array.
+        let mut tools: Vec<serde_json::Value> = req
+            .tools
+            .iter()
+            .filter_map(|t| serde_json::to_value(t).ok())
+            .collect();
+        for st in &req.server_tools {
+            if let Ok(v) = serde_json::to_value(st) {
+                tools.push(v);
+            }
+        }
+
         let body = ApiRequest {
             model: &req.model,
             system: &req.system,
             messages: &req.messages,
-            tools: &req.tools,
+            tools,
             max_tokens: req.max_tokens,
             stream: true,
         };
@@ -219,6 +240,8 @@ impl Provider for AnthropicProvider {
                                     })
                                     .await;
                             }
+                            // ServerToolUse blocks are not sent as Chunk::ToolUse —
+                            // the server executes them and returns results inline.
                         }
 
                         SseEvent::MessageDelta { delta, .. } => {
@@ -259,6 +282,17 @@ impl Provider for AnthropicProvider {
                     let input = serde_json::from_str(&b.json_buf).unwrap_or_default();
                     ContentBlock::ToolUse { id, name, input }
                 }
+                ContentBlockInfo::ServerToolUse { id, name } => {
+                    let input = serde_json::from_str(&b.json_buf).unwrap_or_default();
+                    ContentBlock::ServerToolUse { id, name, input }
+                }
+                ContentBlockInfo::WebSearchToolResult {
+                    tool_use_id,
+                    content,
+                } => ContentBlock::WebSearchToolResult {
+                    tool_use_id,
+                    content,
+                },
                 ContentBlockInfo::Thinking { thinking } => ContentBlock::Thinking { thinking },
             })
             .collect();

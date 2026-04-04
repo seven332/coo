@@ -14,6 +14,9 @@ echo "create a hello.py file" | coo --stdin
 # Custom model and system prompt
 coo --prompt "fix the bug" --model claude-sonnet-4-20250514 --system "You are a Rust expert."
 
+# Enable web search (Anthropic provider only)
+coo --web-search --prompt "what is the latest Rust version?"
+
 # Use the meow provider for testing (no API key needed)
 coo --provider meow --prompt "hello"
 ```
@@ -46,6 +49,7 @@ Output is streamed as NDJSON (one JSON event per line) to stdout.
 | `grep` | Search file contents (uses rg/grep) |
 | `read` | Read files with line numbers |
 | `web_fetch` | Fetch URLs and convert to Markdown |
+| `web_search` | Search the web (Anthropic server-side, `--web-search`) |
 | `write` | Write/create files |
 
 ## Build

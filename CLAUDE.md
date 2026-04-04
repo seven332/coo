@@ -39,4 +39,5 @@ Use [Conventional Commits v1.0.0](https://www.conventionalcommits.org/en/v1.0.0/
 - Provider and ToolRegistry are `Arc`-wrapped for sharing between parent agent and sub-agents spawned by the agent tool.
 - Sub-agent depth is capped (default 5) to prevent infinite recursion.
 - Bash tool uses `kill_on_drop(true)` to prevent orphan processes on timeout.
+- Server-side tools (e.g. web_search) are passed through to the provider via `Request.server_tools`. The provider includes them in the API request; the server executes them and returns results inline. They are not executed locally.
 - Logs go to stderr (`tracing`), NDJSON events go to stdout — clean separation for piping.
