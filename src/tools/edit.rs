@@ -233,7 +233,7 @@ mod tests {
         let result = tool
             .call(
                 json!({
-                    "file_path": "/tmp/nonexistent_you_mind_edit_test",
+                    "file_path": "/tmp/nonexistent_coo_edit_test",
                     "old_string": "a",
                     "new_string": "b"
                 }),

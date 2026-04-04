@@ -14,7 +14,7 @@ cargo test test_name     # run a single test
 
 ## What This Is
 
-you-mind is a headless AI agent CLI written in Rust, designed to run in sandbox environments. It takes a prompt, runs an LLM-driven ReAct loop (think → tool_use → execute → feedback), and streams results as NDJSON to stdout. No terminal UI.
+coo is a headless AI agent CLI written in Rust, designed to run in sandbox environments. It takes a prompt, runs an LLM-driven ReAct loop (think → tool_use → execute → feedback), and streams results as NDJSON to stdout. No terminal UI.
 
 ## Architecture
 

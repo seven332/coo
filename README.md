@@ -1,4 +1,4 @@
-# you-mind
+# coo
 
 An AI agent CLI designed for sandbox environments. Similar to Claude Code, but runs headless with NDJSON streaming output — no terminal UI needed.
 
@@ -6,16 +6,16 @@ An AI agent CLI designed for sandbox environments. Similar to Claude Code, but r
 
 ```bash
 # Direct prompt
-you-mind --prompt "list all files in /tmp"
+coo --prompt "list all files in /tmp"
 
 # Read prompt from stdin
-echo "create a hello.py file" | you-mind --stdin
+echo "create a hello.py file" | coo --stdin
 
 # Custom model and system prompt
-you-mind --prompt "fix the bug" --model claude-sonnet-4-20250514 --system "You are a Rust expert."
+coo --prompt "fix the bug" --model claude-sonnet-4-20250514 --system "You are a Rust expert."
 
 # Use the meow provider for testing (no API key needed)
-you-mind --provider meow --prompt "hello"
+coo --provider meow --prompt "hello"
 ```
 
 Output is streamed as NDJSON (one JSON event per line) to stdout.
@@ -45,6 +45,7 @@ Output is streamed as NDJSON (one JSON event per line) to stdout.
 | `glob` | Find files by pattern |
 | `grep` | Search file contents (uses rg/grep) |
 | `read` | Read files with line numbers |
+| `web_fetch` | Fetch URLs and convert to Markdown |
 | `write` | Write/create files |
 
 ## Build

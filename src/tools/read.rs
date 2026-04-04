@@ -160,10 +160,7 @@ mod tests {
         let tool = ReadTool;
         let ctx = crate::tools::dummy_context();
         let result = tool
-            .call(
-                json!({"file_path": "/tmp/nonexistent_you_mind_test_file"}),
-                &ctx,
-            )
+            .call(json!({"file_path": "/tmp/nonexistent_coo_test_file"}), &ctx)
             .await;
         assert!(result.is_error);
     }

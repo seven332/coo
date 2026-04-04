@@ -4,10 +4,10 @@ use async_trait::async_trait;
 use serde_json::json;
 use tokio::sync::mpsc;
 
-use you_mind::agent::Agent;
-use you_mind::message::{ContentBlock, StreamEvent};
-use you_mind::provider::{Chunk, Provider, Request, StopReason};
-use you_mind::tools::ToolRegistry;
+use coo::agent::Agent;
+use coo::message::{ContentBlock, StreamEvent};
+use coo::provider::{Chunk, Provider, Request, StopReason};
+use coo::tools::ToolRegistry;
 
 // --- Fake Provider ---
 

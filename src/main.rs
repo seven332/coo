@@ -4,13 +4,13 @@ use clap::Parser;
 use tokio::sync::mpsc;
 use tracing_subscriber::EnvFilter;
 
-use you_mind::agent::Agent;
-use you_mind::message::StreamEvent;
-use you_mind::provider::{AnthropicProvider, MeowProvider, Provider};
-use you_mind::tools::ToolRegistry;
+use coo::agent::Agent;
+use coo::message::StreamEvent;
+use coo::provider::{AnthropicProvider, MeowProvider, Provider};
+use coo::tools::ToolRegistry;
 
 #[derive(Parser)]
-#[command(name = "you-mind", about = "An agent CLI for sandbox environments")]
+#[command(name = "coo", about = "An agent CLI for sandbox environments")]
 struct Cli {
     /// The prompt to send to the agent.
     #[arg(short, long)]
