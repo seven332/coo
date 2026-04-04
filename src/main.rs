@@ -1,16 +1,11 @@
-mod agent;
-mod message;
-mod provider;
-mod tools;
-
 use clap::Parser;
 use tokio::sync::mpsc;
 use tracing_subscriber::EnvFilter;
 
-use agent::Agent;
-use message::StreamEvent;
-use provider::AnthropicProvider;
-use tools::ToolRegistry;
+use you_mind::agent::Agent;
+use you_mind::message::StreamEvent;
+use you_mind::provider::AnthropicProvider;
+use you_mind::tools::ToolRegistry;
 
 #[derive(Parser)]
 #[command(name = "you-mind", about = "An agent CLI for sandbox environments")]
