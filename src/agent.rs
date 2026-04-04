@@ -43,6 +43,8 @@ impl Agent {
             content: vec![ContentBlock::Text { text: prompt }],
         }];
 
+        let tool_defs = self.tools.definitions();
+
         for iteration in 0..self.max_iterations {
             info!(iteration, "Agent loop iteration");
 
@@ -53,7 +55,7 @@ impl Agent {
                 model: self.model.clone(),
                 system: self.system.clone(),
                 messages: messages.clone(),
-                tools: self.tools.definitions(),
+                tools: tool_defs.clone(),
                 max_tokens: self.max_tokens,
             };
 
@@ -289,6 +291,45 @@ mod tests {
         }
     }
 
+    /// A mock provider that always returns an error.
+    struct ErrorProvider;
+
+    #[async_trait]
+    impl Provider for ErrorProvider {
+        async fn request(&self, _req: Request, tx: mpsc::Sender<Chunk>) -> anyhow::Result<()> {
+            let _ = tx.send(Chunk::Error("something broke".into())).await;
+            anyhow::bail!("provider failed");
+        }
+    }
+
+    /// A mock provider that always requests a tool call (never stops).
+    struct InfiniteToolProvider;
+
+    #[async_trait]
+    impl Provider for InfiniteToolProvider {
+        async fn request(&self, _req: Request, tx: mpsc::Sender<Chunk>) -> anyhow::Result<()> {
+            let input = json!({"command": "echo loop"});
+            let _ = tx
+                .send(Chunk::ToolUse {
+                    id: "toolu_01".into(),
+                    name: "bash".into(),
+                    input: input.clone(),
+                })
+                .await;
+            let _ = tx
+                .send(Chunk::Done {
+                    stop_reason: StopReason::ToolUse,
+                    content: vec![ContentBlock::ToolUse {
+                        id: "toolu_01".into(),
+                        name: "bash".into(),
+                        input,
+                    }],
+                })
+                .await;
+            Ok(())
+        }
+    }
+
     async fn collect_events(mut rx: mpsc::Receiver<StreamEvent>) -> Vec<StreamEvent> {
         let mut events = Vec::new();
         while let Some(e) = rx.recv().await {
@@ -339,5 +380,49 @@ mod tests {
         assert!(events
             .iter()
             .any(|e| matches!(e, StreamEvent::Done { reason } if reason == "end_turn")));
+    }
+
+    #[tokio::test]
+    async fn provider_error_emits_error_and_done() {
+        let provider = ErrorProvider;
+        let tools = ToolRegistry::new();
+        let agent = Agent::new(Box::new(provider), tools, "test".into(), "sys".into());
+
+        let (tx, rx) = mpsc::channel(64);
+        let handle = tokio::spawn(async move { collect_events(rx).await });
+        let result = agent.run("hi".into(), tx).await;
+        assert!(result.is_err());
+
+        let events = handle.await.unwrap();
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, StreamEvent::Error { .. })));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, StreamEvent::Done { reason } if reason == "error")));
+    }
+
+    #[tokio::test]
+    async fn max_iterations_terminates() {
+        let provider = InfiniteToolProvider;
+        let tools = ToolRegistry::with_defaults();
+        let mut agent = Agent::new(Box::new(provider), tools, "test".into(), "sys".into());
+        agent.max_iterations = 3;
+
+        let (tx, rx) = mpsc::channel(256);
+        let handle = tokio::spawn(async move { collect_events(rx).await });
+        agent.run("loop".into(), tx).await.unwrap();
+        let events = handle.await.unwrap();
+
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, StreamEvent::Done { reason } if reason == "max_iterations")));
+
+        // Should have exactly 3 tool use events (one per iteration).
+        let tool_use_count = events
+            .iter()
+            .filter(|e| matches!(e, StreamEvent::ToolUse { .. }))
+            .count();
+        assert_eq!(tool_use_count, 3);
     }
 }

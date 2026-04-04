@@ -245,6 +245,7 @@ impl Provider for AnthropicProvider {
                 }
                 Err(reqwest_eventsource::Error::StreamEnded) => break,
                 Err(e) => {
+                    let _ = tx.send(Chunk::Error(format!("SSE error: {e}"))).await;
                     bail!("SSE error: {e}");
                 }
             }
