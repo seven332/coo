@@ -18,6 +18,19 @@ pub struct ToolDefinition {
     pub input_schema: serde_json::Value,
 }
 
+/// A server-side tool managed by the provider (e.g. web_search).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum ServerTool {
+    /// Anthropic web search server tool.
+    #[serde(rename = "web_search_20250305")]
+    WebSearch {
+        name: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        max_uses: Option<u32>,
+    },
+}
+
 /// Request to the LLM.
 #[derive(Debug, Clone)]
 pub struct Request {
@@ -25,6 +38,7 @@ pub struct Request {
     pub system: String,
     pub messages: Vec<Message>,
     pub tools: Vec<ToolDefinition>,
+    pub server_tools: Vec<ServerTool>,
     pub max_tokens: u32,
 }
 
