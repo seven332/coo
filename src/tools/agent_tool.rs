@@ -232,4 +232,14 @@ mod tests {
         let result = tool.call(json!({"prompt": "test"}), &ctx).await;
         assert!(result.is_error);
     }
+
+    #[tokio::test]
+    async fn missing_prompt_rejected() {
+        let provider: Arc<dyn Provider> = Arc::new(EchoProvider);
+        let ctx = make_context(provider);
+
+        let tool = AgentTool;
+        let result = tool.call(json!({}), &ctx).await;
+        assert!(result.is_error);
+    }
 }

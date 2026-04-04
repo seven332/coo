@@ -13,13 +13,16 @@ echo "create a hello.py file" | you-mind --stdin
 
 # Custom model and system prompt
 you-mind --prompt "fix the bug" --model claude-sonnet-4-20250514 --system "You are a Rust expert."
+
+# Use the meow provider for testing (no API key needed)
+you-mind --provider meow --prompt "hello"
 ```
 
 Output is streamed as NDJSON (one JSON event per line) to stdout.
 
 ## Environment Variables
 
-- `ANTHROPIC_API_KEY` — API key (required)
+- `ANTHROPIC_API_KEY` — API key (required for anthropic provider)
 - `ANTHROPIC_BASE_URL` — Custom API endpoint
 
 ## Event Types
@@ -36,7 +39,11 @@ Output is streamed as NDJSON (one JSON event per line) to stdout.
 
 | Tool | Description |
 |------|-------------|
+| `agent` | Spawn sub-agents for complex tasks |
 | `bash` | Execute shell commands |
+| `edit` | Exact string replacement in files |
+| `glob` | Find files by pattern |
+| `grep` | Search file contents (uses rg/grep) |
 | `read` | Read files with line numbers |
 | `write` | Write/create files |
 

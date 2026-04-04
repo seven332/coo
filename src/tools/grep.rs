@@ -283,4 +283,23 @@ mod tests {
         let text = text_of(&result);
         assert!(text.contains("2:") || text.contains("2-"));
     }
+
+    #[tokio::test]
+    async fn invalid_regex() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("test.txt"), "hello").unwrap();
+
+        let tool = GrepTool;
+        let ctx = crate::tools::dummy_context();
+        let result = tool
+            .call(
+                json!({
+                    "pattern": "[invalid",
+                    "path": dir.path().to_str().unwrap()
+                }),
+                &ctx,
+            )
+            .await;
+        assert!(result.is_error);
+    }
 }
