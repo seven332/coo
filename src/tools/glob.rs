@@ -42,7 +42,7 @@ impl Tool for GlobTool {
         })
     }
 
-    async fn call(&self, input: serde_json::Value) -> ToolResult {
+    async fn call(&self, input: serde_json::Value, _context: &super::ToolContext) -> ToolResult {
         let input: Input = match serde_json::from_value(input) {
             Ok(v) => v,
             Err(e) => return ToolResult::error(format!("Invalid input: {e}")),
@@ -97,8 +97,12 @@ mod tests {
         fs::write(dir.path().join("baz.txt"), "").unwrap();
 
         let tool = GlobTool;
+        let ctx = crate::tools::dummy_context();
         let result = tool
-            .call(json!({"pattern": "*.rs", "path": dir.path().to_str().unwrap()}))
+            .call(
+                json!({"pattern": "*.rs", "path": dir.path().to_str().unwrap()}),
+                &ctx,
+            )
             .await;
         assert!(!result.is_error);
         let text = text_of(&result);
@@ -116,8 +120,12 @@ mod tests {
         fs::write(sub.join("deep.rs"), "").unwrap();
 
         let tool = GlobTool;
+        let ctx = crate::tools::dummy_context();
         let result = tool
-            .call(json!({"pattern": "**/*.rs", "path": dir.path().to_str().unwrap()}))
+            .call(
+                json!({"pattern": "**/*.rs", "path": dir.path().to_str().unwrap()}),
+                &ctx,
+            )
             .await;
         assert!(!result.is_error);
         let text = text_of(&result);
@@ -130,8 +138,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
 
         let tool = GlobTool;
+        let ctx = crate::tools::dummy_context();
         let result = tool
-            .call(json!({"pattern": "*.xyz", "path": dir.path().to_str().unwrap()}))
+            .call(
+                json!({"pattern": "*.xyz", "path": dir.path().to_str().unwrap()}),
+                &ctx,
+            )
             .await;
         assert!(!result.is_error);
         assert!(text_of(&result).contains("No matches"));
@@ -140,7 +152,22 @@ mod tests {
     #[tokio::test]
     async fn invalid_pattern() {
         let tool = GlobTool;
-        let result = tool.call(json!({"pattern": "[invalid"})).await;
+        let ctx = crate::tools::dummy_context();
+        let result = tool.call(json!({"pattern": "[invalid"}), &ctx).await;
         assert!(result.is_error);
+    }
+
+    #[tokio::test]
+    async fn nonexistent_path() {
+        let tool = GlobTool;
+        let ctx = crate::tools::dummy_context();
+        let result = tool
+            .call(
+                json!({"pattern": "*.rs", "path": "/tmp/nonexistent_you_mind_glob_test"}),
+                &ctx,
+            )
+            .await;
+        assert!(!result.is_error);
+        assert!(text_of(&result).contains("No matches"));
     }
 }

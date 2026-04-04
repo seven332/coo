@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use clap::Parser;
 use tokio::sync::mpsc;
 use tracing_subscriber::EnvFilter;
@@ -69,14 +71,14 @@ async fn main() -> anyhow::Result<()> {
         std::process::exit(1);
     };
 
-    let provider: Box<dyn Provider> = match cli.provider.as_str() {
-        "meow" => Box::new(MeowProvider),
+    let provider: Arc<dyn Provider> = match cli.provider.as_str() {
+        "meow" => Arc::new(MeowProvider),
         "anthropic" => {
             let api_key = cli.api_key.unwrap_or_else(|| {
                 eprintln!("Error: ANTHROPIC_API_KEY is required for anthropic provider");
                 std::process::exit(2);
             });
-            Box::new(AnthropicProvider::new(api_key, cli.base_url))
+            Arc::new(AnthropicProvider::new(api_key, cli.base_url))
         }
         other => {
             eprintln!("Error: unknown provider: {other}");
@@ -84,7 +86,7 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    let tools = ToolRegistry::with_defaults();
+    let tools = Arc::new(ToolRegistry::with_defaults());
     let system = cli.system.unwrap_or_else(|| DEFAULT_SYSTEM.to_string());
 
     let mut agent = Agent::new(provider, tools, cli.model, system);

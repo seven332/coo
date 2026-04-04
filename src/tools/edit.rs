@@ -53,11 +53,15 @@ impl Tool for EditTool {
         })
     }
 
-    async fn call(&self, input: serde_json::Value) -> ToolResult {
+    async fn call(&self, input: serde_json::Value, _context: &super::ToolContext) -> ToolResult {
         let input: Input = match serde_json::from_value(input) {
             Ok(v) => v,
             Err(e) => return ToolResult::error(format!("Invalid input: {e}")),
         };
+
+        if input.old_string.is_empty() {
+            return ToolResult::error("old_string must not be empty");
+        }
 
         if input.old_string == input.new_string {
             return ToolResult::error("old_string and new_string must be different");
@@ -116,12 +120,16 @@ mod tests {
         std::fs::write(&path, "hello world").unwrap();
 
         let tool = EditTool;
+        let ctx = crate::tools::dummy_context();
         let result = tool
-            .call(json!({
-                "file_path": path.to_str().unwrap(),
-                "old_string": "hello",
-                "new_string": "goodbye"
-            }))
+            .call(
+                json!({
+                    "file_path": path.to_str().unwrap(),
+                    "old_string": "hello",
+                    "new_string": "goodbye"
+                }),
+                &ctx,
+            )
             .await;
         assert!(!result.is_error);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "goodbye world");
@@ -134,13 +142,17 @@ mod tests {
         std::fs::write(&path, "aaa bbb aaa").unwrap();
 
         let tool = EditTool;
+        let ctx = crate::tools::dummy_context();
         let result = tool
-            .call(json!({
-                "file_path": path.to_str().unwrap(),
-                "old_string": "aaa",
-                "new_string": "ccc",
-                "replace_all": true
-            }))
+            .call(
+                json!({
+                    "file_path": path.to_str().unwrap(),
+                    "old_string": "aaa",
+                    "new_string": "ccc",
+                    "replace_all": true
+                }),
+                &ctx,
+            )
             .await;
         assert!(!result.is_error);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "ccc bbb ccc");
@@ -154,12 +166,16 @@ mod tests {
         std::fs::write(&path, "foo bar foo").unwrap();
 
         let tool = EditTool;
+        let ctx = crate::tools::dummy_context();
         let result = tool
-            .call(json!({
-                "file_path": path.to_str().unwrap(),
-                "old_string": "foo",
-                "new_string": "baz"
-            }))
+            .call(
+                json!({
+                    "file_path": path.to_str().unwrap(),
+                    "old_string": "foo",
+                    "new_string": "baz"
+                }),
+                &ctx,
+            )
             .await;
         assert!(result.is_error);
         assert!(text_of(&result).contains("2 matches"));
@@ -174,12 +190,16 @@ mod tests {
         std::fs::write(&path, "hello").unwrap();
 
         let tool = EditTool;
+        let ctx = crate::tools::dummy_context();
         let result = tool
-            .call(json!({
-                "file_path": path.to_str().unwrap(),
-                "old_string": "xyz",
-                "new_string": "abc"
-            }))
+            .call(
+                json!({
+                    "file_path": path.to_str().unwrap(),
+                    "old_string": "xyz",
+                    "new_string": "abc"
+                }),
+                &ctx,
+            )
             .await;
         assert!(result.is_error);
         assert!(text_of(&result).contains("not found"));
@@ -192,12 +212,16 @@ mod tests {
         std::fs::write(&path, "hello").unwrap();
 
         let tool = EditTool;
+        let ctx = crate::tools::dummy_context();
         let result = tool
-            .call(json!({
-                "file_path": path.to_str().unwrap(),
-                "old_string": "hello",
-                "new_string": "hello"
-            }))
+            .call(
+                json!({
+                    "file_path": path.to_str().unwrap(),
+                    "old_string": "hello",
+                    "new_string": "hello"
+                }),
+                &ctx,
+            )
             .await;
         assert!(result.is_error);
     }
@@ -205,13 +229,61 @@ mod tests {
     #[tokio::test]
     async fn nonexistent_file() {
         let tool = EditTool;
+        let ctx = crate::tools::dummy_context();
         let result = tool
-            .call(json!({
-                "file_path": "/tmp/nonexistent_you_mind_edit_test",
-                "old_string": "a",
-                "new_string": "b"
-            }))
+            .call(
+                json!({
+                    "file_path": "/tmp/nonexistent_you_mind_edit_test",
+                    "old_string": "a",
+                    "new_string": "b"
+                }),
+                &ctx,
+            )
             .await;
         assert!(result.is_error);
+    }
+
+    #[tokio::test]
+    async fn empty_old_string_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.txt");
+        std::fs::write(&path, "hello").unwrap();
+
+        let tool = EditTool;
+        let ctx = crate::tools::dummy_context();
+        let result = tool
+            .call(
+                json!({
+                    "file_path": path.to_str().unwrap(),
+                    "old_string": "",
+                    "new_string": "x"
+                }),
+                &ctx,
+            )
+            .await;
+        assert!(result.is_error);
+        assert!(text_of(&result).contains("empty"));
+    }
+
+    #[tokio::test]
+    async fn multiline_replacement() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.txt");
+        std::fs::write(&path, "line1\nline2\nline3").unwrap();
+
+        let tool = EditTool;
+        let ctx = crate::tools::dummy_context();
+        let result = tool
+            .call(
+                json!({
+                    "file_path": path.to_str().unwrap(),
+                    "old_string": "line1\nline2",
+                    "new_string": "replaced"
+                }),
+                &ctx,
+            )
+            .await;
+        assert!(!result.is_error);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "replaced\nline3");
     }
 }

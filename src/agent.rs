@@ -1,23 +1,27 @@
+use std::sync::Arc;
+
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 use crate::message::{ContentBlock, Message, Role, StreamEvent, ToolResultContent};
 use crate::provider::{Chunk, Provider, Request, StopReason};
-use crate::tools::ToolRegistry;
+use crate::tools::{ToolContext, ToolRegistry};
 
 pub struct Agent {
-    provider: Box<dyn Provider>,
-    tools: ToolRegistry,
+    provider: Arc<dyn Provider>,
+    tools: Arc<ToolRegistry>,
     model: String,
     system: String,
     pub max_tokens: u32,
     pub max_iterations: usize,
+    pub depth: usize,
+    pub max_depth: usize,
 }
 
 impl Agent {
     pub fn new(
-        provider: Box<dyn Provider>,
-        tools: ToolRegistry,
+        provider: Arc<dyn Provider>,
+        tools: Arc<ToolRegistry>,
         model: String,
         system: String,
     ) -> Self {
@@ -28,6 +32,8 @@ impl Agent {
             system,
             max_tokens: 16384,
             max_iterations: 100,
+            depth: 0,
+            max_depth: 5,
         }
     }
 
@@ -44,6 +50,17 @@ impl Agent {
         }];
 
         let tool_defs = self.tools.definitions();
+
+        let tool_context = ToolContext {
+            provider: self.provider.clone(),
+            tools: self.tools.clone(),
+            model: self.model.clone(),
+            system: self.system.clone(),
+            max_tokens: self.max_tokens,
+            max_iterations: self.max_iterations,
+            depth: self.depth,
+            max_depth: self.max_depth,
+        };
 
         for iteration in 0..self.max_iterations {
             info!(iteration, "Agent loop iteration");
@@ -62,9 +79,6 @@ impl Agent {
             let provider_handle = {
                 let provider = &self.provider;
                 let chunk_tx = chunk_tx;
-                // We need to spawn this since we want to process chunks as they arrive.
-                // But we can't move &self into a spawn. So we'll drive it inline
-                // and forward events as they come.
                 provider.request(req, chunk_tx)
             };
 
@@ -168,7 +182,7 @@ impl Agent {
             for (id, name, input) in tool_uses {
                 info!(tool = %name, "Executing tool");
                 let result = match self.tools.get(&name) {
-                    Some(tool) => tool.call(input.clone()).await,
+                    Some(tool) => tool.call(input.clone(), &tool_context).await,
                     None => {
                         warn!(tool = %name, "Unknown tool");
                         crate::message::ToolResult::error(format!("Unknown tool: {name}"))
@@ -250,7 +264,6 @@ mod tests {
     #[async_trait]
     impl Provider for ToolCallProvider {
         async fn request(&self, req: Request, tx: mpsc::Sender<Chunk>) -> anyhow::Result<()> {
-            // If conversation already has a tool result, just respond with text.
             let has_tool_result = req.messages.iter().any(|m| {
                 m.content
                     .iter()
@@ -338,13 +351,23 @@ mod tests {
         events
     }
 
+    fn make_agent<P: Provider + 'static>(provider: P, tools: ToolRegistry) -> Agent {
+        Agent::new(
+            Arc::new(provider),
+            Arc::new(tools),
+            "test".into(),
+            "sys".into(),
+        )
+    }
+
     #[tokio::test]
     async fn simple_text_response() {
-        let provider = TextProvider {
-            text: "Hello!".into(),
-        };
-        let tools = ToolRegistry::new();
-        let agent = Agent::new(Box::new(provider), tools, "test".into(), "sys".into());
+        let agent = make_agent(
+            TextProvider {
+                text: "Hello!".into(),
+            },
+            ToolRegistry::new(),
+        );
 
         let (tx, rx) = mpsc::channel(64);
         let handle = tokio::spawn(async move { collect_events(rx).await });
@@ -365,16 +388,13 @@ mod tests {
 
     #[tokio::test]
     async fn tool_call_and_response() {
-        let provider = ToolCallProvider;
-        let tools = ToolRegistry::with_defaults();
-        let agent = Agent::new(Box::new(provider), tools, "test".into(), "sys".into());
+        let agent = make_agent(ToolCallProvider, ToolRegistry::with_defaults());
 
         let (tx, rx) = mpsc::channel(64);
         let handle = tokio::spawn(async move { collect_events(rx).await });
         agent.run("run echo".into(), tx).await.unwrap();
         let events = handle.await.unwrap();
 
-        // Should see: ToolUse → ToolResult → Text → Done
         assert!(
             events
                 .iter()
@@ -394,9 +414,7 @@ mod tests {
 
     #[tokio::test]
     async fn provider_error_emits_error_and_done() {
-        let provider = ErrorProvider;
-        let tools = ToolRegistry::new();
-        let agent = Agent::new(Box::new(provider), tools, "test".into(), "sys".into());
+        let agent = make_agent(ErrorProvider, ToolRegistry::new());
 
         let (tx, rx) = mpsc::channel(64);
         let handle = tokio::spawn(async move { collect_events(rx).await });
@@ -418,9 +436,7 @@ mod tests {
 
     #[tokio::test]
     async fn max_iterations_terminates() {
-        let provider = InfiniteToolProvider;
-        let tools = ToolRegistry::with_defaults();
-        let mut agent = Agent::new(Box::new(provider), tools, "test".into(), "sys".into());
+        let mut agent = make_agent(InfiniteToolProvider, ToolRegistry::with_defaults());
         agent.max_iterations = 3;
 
         let (tx, rx) = mpsc::channel(256);
@@ -434,7 +450,6 @@ mod tests {
                 .any(|e| matches!(e, StreamEvent::Done { reason } if reason == "max_iterations"))
         );
 
-        // Should have exactly 3 tool use events (one per iteration).
         let tool_use_count = events
             .iter()
             .filter(|e| matches!(e, StreamEvent::ToolUse { .. }))

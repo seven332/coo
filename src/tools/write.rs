@@ -41,7 +41,7 @@ impl Tool for WriteTool {
         })
     }
 
-    async fn call(&self, input: serde_json::Value) -> ToolResult {
+    async fn call(&self, input: serde_json::Value, _context: &super::ToolContext) -> ToolResult {
         let input: Input = match serde_json::from_value(input) {
             Ok(v) => v,
             Err(e) => return ToolResult::error(format!("Invalid input: {e}")),
@@ -72,11 +72,15 @@ mod tests {
         let path = dir.path().join("test.txt");
 
         let tool = WriteTool;
+        let ctx = crate::tools::dummy_context();
         let result = tool
-            .call(json!({
-                "file_path": path.to_str().unwrap(),
-                "content": "hello world"
-            }))
+            .call(
+                json!({
+                    "file_path": path.to_str().unwrap(),
+                    "content": "hello world"
+                }),
+                &ctx,
+            )
             .await;
         assert!(!result.is_error);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "hello world");
@@ -88,11 +92,15 @@ mod tests {
         let path = dir.path().join("a/b/c/test.txt");
 
         let tool = WriteTool;
+        let ctx = crate::tools::dummy_context();
         let result = tool
-            .call(json!({
-                "file_path": path.to_str().unwrap(),
-                "content": "nested"
-            }))
+            .call(
+                json!({
+                    "file_path": path.to_str().unwrap(),
+                    "content": "nested"
+                }),
+                &ctx,
+            )
             .await;
         assert!(!result.is_error);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "nested");
