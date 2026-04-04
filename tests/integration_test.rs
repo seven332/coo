@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use serde_json::json;
 use tokio::sync::mpsc;
@@ -46,9 +48,9 @@ impl Provider for FakeProvider {
 // --- Helpers ---
 
 async fn run_agent(provider: FakeProvider, prompt: &str) -> Vec<StreamEvent> {
-    let tools = ToolRegistry::with_defaults();
+    let tools = Arc::new(ToolRegistry::with_defaults());
     let agent = Agent::new(
-        Box::new(provider),
+        Arc::new(provider),
         tools,
         "fake-model".into(),
         "You are a test assistant.".into(),
@@ -111,7 +113,6 @@ async fn bash_tool_round_trip() {
 
     let events = run_agent(provider, "run echo hello world").await;
 
-    // Verify event sequence: ToolUse → ToolResult → Text → Done
     let tool_use = events
         .iter()
         .find(|e| matches!(e, StreamEvent::ToolUse { name, .. } if name == "bash"));
@@ -122,7 +123,6 @@ async fn bash_tool_round_trip() {
     );
     assert!(tool_result.is_some(), "expected successful ToolResult");
 
-    // Verify the tool actually ran and captured output
     if let Some(StreamEvent::ToolResult { content, .. }) = tool_result {
         assert!(
             content.contains("hello world"),
@@ -150,27 +150,22 @@ async fn write_then_read_round_trip() {
     let path_str = file_path.to_str().unwrap();
 
     let provider = FakeProvider::new(vec![
-        // Step 1: write
         tool_call_response(
             "t1",
             "write",
             json!({"file_path": path_str, "content": "line1\nline2\nline3"}),
         ),
-        // Step 2: read
         tool_call_response("t2", "read", json!({"file_path": path_str})),
-        // Step 3: final response
         text_response("File has 3 lines."),
     ]);
 
     let events = run_agent(provider, "write then read a file").await;
 
-    // Write result
     let write_result = events.iter().find(
         |e| matches!(e, StreamEvent::ToolResult { tool_use_id, is_error, .. } if tool_use_id == "t1" && !is_error),
     );
     assert!(write_result.is_some(), "write should succeed");
 
-    // Read result should contain the written content
     let read_result = events
         .iter()
         .find(|e| matches!(e, StreamEvent::ToolResult { tool_use_id, .. } if tool_use_id == "t2"));
@@ -196,21 +191,17 @@ async fn multi_step_tool_usage() {
     let path_str = path.to_str().unwrap();
 
     let provider = FakeProvider::new(vec![
-        // Step 1: create file
         tool_call_response(
             "t1",
             "bash",
             json!({"command": format!("echo -n '0' > {path_str}")}),
         ),
-        // Step 2: read it
         tool_call_response("t2", "read", json!({"file_path": path_str})),
-        // Step 3: overwrite
         tool_call_response(
             "t3",
             "write",
             json!({"file_path": path_str, "content": "42"}),
         ),
-        // Step 4: confirm
         text_response("Updated to 42."),
     ]);
 
@@ -228,7 +219,6 @@ async fn multi_step_tool_usage() {
         .count();
     assert_eq!(tool_result_count, 3, "should have 3 tool results");
 
-    // Verify final file content
     let final_content = std::fs::read_to_string(&path).unwrap();
     assert_eq!(final_content, "42");
 }
@@ -291,7 +281,6 @@ async fn text_only_no_tools() {
             .any(|e| matches!(e, StreamEvent::Done { reason } if reason == "end_turn"))
     );
 
-    // No tool events
     assert!(
         !events
             .iter()

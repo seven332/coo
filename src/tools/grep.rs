@@ -66,7 +66,7 @@ impl Tool for GrepTool {
         })
     }
 
-    async fn call(&self, input: serde_json::Value) -> ToolResult {
+    async fn call(&self, input: serde_json::Value, _context: &super::ToolContext) -> ToolResult {
         let input: Input = match serde_json::from_value(input) {
             Ok(v) => v,
             Err(e) => return ToolResult::error(format!("Invalid input: {e}")),
@@ -182,11 +182,15 @@ mod tests {
         .unwrap();
 
         let tool = GrepTool;
+        let ctx = crate::tools::dummy_context();
         let result = tool
-            .call(json!({
-                "pattern": "hello",
-                "path": dir.path().join("test.txt").to_str().unwrap()
-            }))
+            .call(
+                json!({
+                    "pattern": "hello",
+                    "path": dir.path().join("test.txt").to_str().unwrap()
+                }),
+                &ctx,
+            )
             .await;
         assert!(!result.is_error);
         let text = text_of(&result);
@@ -202,11 +206,15 @@ mod tests {
         fs::write(dir.path().join("b.txt"), "nothing here").unwrap();
 
         let tool = GrepTool;
+        let ctx = crate::tools::dummy_context();
         let result = tool
-            .call(json!({
-                "pattern": "match_me",
-                "path": dir.path().to_str().unwrap()
-            }))
+            .call(
+                json!({
+                    "pattern": "match_me",
+                    "path": dir.path().to_str().unwrap()
+                }),
+                &ctx,
+            )
             .await;
         assert!(!result.is_error);
         let text = text_of(&result);
@@ -220,11 +228,15 @@ mod tests {
         fs::write(dir.path().join("test.txt"), "hello").unwrap();
 
         let tool = GrepTool;
+        let ctx = crate::tools::dummy_context();
         let result = tool
-            .call(json!({
-                "pattern": "nonexistent_xyz",
-                "path": dir.path().to_str().unwrap()
-            }))
+            .call(
+                json!({
+                    "pattern": "nonexistent_xyz",
+                    "path": dir.path().to_str().unwrap()
+                }),
+                &ctx,
+            )
             .await;
         assert!(!result.is_error);
         assert!(text_of(&result).contains("No matches"));
@@ -236,12 +248,16 @@ mod tests {
         fs::write(dir.path().join("test.txt"), "Hello World").unwrap();
 
         let tool = GrepTool;
+        let ctx = crate::tools::dummy_context();
         let result = tool
-            .call(json!({
-                "pattern": "hello",
-                "path": dir.path().join("test.txt").to_str().unwrap(),
-                "case_insensitive": true
-            }))
+            .call(
+                json!({
+                    "pattern": "hello",
+                    "path": dir.path().join("test.txt").to_str().unwrap(),
+                    "case_insensitive": true
+                }),
+                &ctx,
+            )
             .await;
         assert!(!result.is_error);
         assert!(text_of(&result).contains("Hello World"));
@@ -253,11 +269,15 @@ mod tests {
         fs::write(dir.path().join("test.txt"), "aaa\nbbb\nccc").unwrap();
 
         let tool = GrepTool;
+        let ctx = crate::tools::dummy_context();
         let result = tool
-            .call(json!({
-                "pattern": "bbb",
-                "path": dir.path().join("test.txt").to_str().unwrap()
-            }))
+            .call(
+                json!({
+                    "pattern": "bbb",
+                    "path": dir.path().join("test.txt").to_str().unwrap()
+                }),
+                &ctx,
+            )
             .await;
         assert!(!result.is_error);
         let text = text_of(&result);

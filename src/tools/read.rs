@@ -48,7 +48,7 @@ impl Tool for ReadTool {
         })
     }
 
-    async fn call(&self, input: serde_json::Value) -> ToolResult {
+    async fn call(&self, input: serde_json::Value, _context: &super::ToolContext) -> ToolResult {
         let input: Input = match serde_json::from_value(input) {
             Ok(v) => v,
             Err(e) => return ToolResult::error(format!("Invalid input: {e}")),
@@ -105,8 +105,9 @@ mod tests {
         writeln!(tmp, "line3").unwrap();
 
         let tool = ReadTool;
+        let ctx = crate::tools::dummy_context();
         let result = tool
-            .call(json!({"file_path": tmp.path().to_str().unwrap()}))
+            .call(json!({"file_path": tmp.path().to_str().unwrap()}), &ctx)
             .await;
         assert!(!result.is_error);
         let text = text_of(&result);
@@ -122,12 +123,16 @@ mod tests {
         }
 
         let tool = ReadTool;
+        let ctx = crate::tools::dummy_context();
         let result = tool
-            .call(json!({
-                "file_path": tmp.path().to_str().unwrap(),
-                "offset": 2,
-                "limit": 3
-            }))
+            .call(
+                json!({
+                    "file_path": tmp.path().to_str().unwrap(),
+                    "offset": 2,
+                    "limit": 3
+                }),
+                &ctx,
+            )
             .await;
         assert!(!result.is_error);
         let text = text_of(&result);
@@ -141,8 +146,9 @@ mod tests {
         let tmp = tempfile::NamedTempFile::new().unwrap();
 
         let tool = ReadTool;
+        let ctx = crate::tools::dummy_context();
         let result = tool
-            .call(json!({"file_path": tmp.path().to_str().unwrap()}))
+            .call(json!({"file_path": tmp.path().to_str().unwrap()}), &ctx)
             .await;
         assert!(!result.is_error);
         let text = text_of(&result);
@@ -152,8 +158,26 @@ mod tests {
     #[tokio::test]
     async fn read_nonexistent() {
         let tool = ReadTool;
+        let ctx = crate::tools::dummy_context();
         let result = tool
-            .call(json!({"file_path": "/tmp/nonexistent_you_mind_test_file"}))
+            .call(
+                json!({"file_path": "/tmp/nonexistent_you_mind_test_file"}),
+                &ctx,
+            )
+            .await;
+        assert!(result.is_error);
+    }
+
+    #[tokio::test]
+    async fn read_binary_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("binary.bin");
+        std::fs::write(&path, b"\x00\xff\xfe").unwrap();
+
+        let tool = ReadTool;
+        let ctx = crate::tools::dummy_context();
+        let result = tool
+            .call(json!({"file_path": path.to_str().unwrap()}), &ctx)
             .await;
         assert!(result.is_error);
     }

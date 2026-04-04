@@ -47,19 +47,20 @@ impl Tool for BashTool {
         })
     }
 
-    async fn call(&self, input: serde_json::Value) -> ToolResult {
+    async fn call(&self, input: serde_json::Value, _context: &super::ToolContext) -> ToolResult {
         let input: Input = match serde_json::from_value(input) {
             Ok(v) => v,
             Err(e) => return ToolResult::error(format!("Invalid input: {e}")),
         };
 
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(input.timeout),
-            Command::new("bash").arg("-c").arg(&input.command).output(),
-        )
-        .await;
+        let timeout = std::time::Duration::from_secs(input.timeout);
+        let output_fut = Command::new("bash")
+            .arg("-c")
+            .arg(&input.command)
+            .kill_on_drop(true)
+            .output();
 
-        match result {
+        match tokio::time::timeout(timeout, output_fut).await {
             Ok(Ok(output)) => {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 let stderr = String::from_utf8_lossy(&output.stderr);
@@ -100,7 +101,8 @@ mod tests {
     #[tokio::test]
     async fn echo_command() {
         let tool = BashTool;
-        let result = tool.call(json!({"command": "echo hello"})).await;
+        let ctx = crate::tools::dummy_context();
+        let result = tool.call(json!({"command": "echo hello"}), &ctx).await;
         assert!(!result.is_error);
         let text = match &result.content[0] {
             crate::message::ToolResultContent::Text { text } => text.as_str(),
@@ -111,22 +113,25 @@ mod tests {
     #[tokio::test]
     async fn failing_command() {
         let tool = BashTool;
-        let result = tool.call(json!({"command": "exit 1"})).await;
+        let ctx = crate::tools::dummy_context();
+        let result = tool.call(json!({"command": "exit 1"}), &ctx).await;
         assert!(result.is_error);
     }
 
     #[tokio::test]
     async fn invalid_input() {
         let tool = BashTool;
-        let result = tool.call(json!({})).await;
+        let ctx = crate::tools::dummy_context();
+        let result = tool.call(json!({}), &ctx).await;
         assert!(result.is_error);
     }
 
     #[tokio::test]
     async fn timeout() {
         let tool = BashTool;
+        let ctx = crate::tools::dummy_context();
         let result = tool
-            .call(json!({"command": "sleep 10", "timeout": 1}))
+            .call(json!({"command": "sleep 10", "timeout": 1}), &ctx)
             .await;
         assert!(result.is_error);
     }
@@ -134,11 +139,24 @@ mod tests {
     #[tokio::test]
     async fn captures_stderr() {
         let tool = BashTool;
-        let result = tool.call(json!({"command": "echo err >&2"})).await;
+        let ctx = crate::tools::dummy_context();
+        let result = tool.call(json!({"command": "echo err >&2"}), &ctx).await;
         let text = match &result.content[0] {
             crate::message::ToolResultContent::Text { text } => text.clone(),
         };
         assert!(text.contains("stderr:"));
         assert!(text.contains("err"));
+    }
+
+    #[tokio::test]
+    async fn no_output_command() {
+        let tool = BashTool;
+        let ctx = crate::tools::dummy_context();
+        let result = tool.call(json!({"command": "true"}), &ctx).await;
+        assert!(!result.is_error);
+        let text = match &result.content[0] {
+            crate::message::ToolResultContent::Text { text } => text.as_str(),
+        };
+        assert_eq!(text, "(no output)");
     }
 }
