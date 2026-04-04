@@ -130,12 +130,16 @@ async fn bash_tool_round_trip() {
         );
     }
 
-    assert!(events
-        .iter()
-        .any(|e| matches!(e, StreamEvent::Text { text } if text.contains("hello world"))));
-    assert!(events
-        .iter()
-        .any(|e| matches!(e, StreamEvent::Done { reason } if reason == "end_turn")));
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, StreamEvent::Text { text } if text.contains("hello world")))
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, StreamEvent::Done { reason } if reason == "end_turn"))
+    );
 }
 
 /// Write a file then read it back in the same agent session.
@@ -167,16 +171,19 @@ async fn write_then_read_round_trip() {
     assert!(write_result.is_some(), "write should succeed");
 
     // Read result should contain the written content
-    let read_result = events.iter().find(
-        |e| matches!(e, StreamEvent::ToolResult { tool_use_id, .. } if tool_use_id == "t2"),
-    );
+    let read_result = events
+        .iter()
+        .find(|e| matches!(e, StreamEvent::ToolResult { tool_use_id, .. } if tool_use_id == "t2"));
     assert!(read_result.is_some(), "read should succeed");
     if let Some(StreamEvent::ToolResult {
         content, is_error, ..
     }) = read_result
     {
         assert!(!is_error);
-        assert!(content.contains("line1"), "read should return written content");
+        assert!(
+            content.contains("line1"),
+            "read should return written content"
+        );
         assert!(content.contains("line3"));
     }
 }
@@ -273,18 +280,26 @@ async fn text_only_no_tools() {
 
     let events = run_agent(provider, "hello").await;
 
-    assert!(events
-        .iter()
-        .any(|e| matches!(e, StreamEvent::Text { text } if text == "Just a simple answer.")));
-    assert!(events
-        .iter()
-        .any(|e| matches!(e, StreamEvent::Done { reason } if reason == "end_turn")));
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, StreamEvent::Text { text } if text == "Just a simple answer."))
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, StreamEvent::Done { reason } if reason == "end_turn"))
+    );
 
     // No tool events
-    assert!(!events
-        .iter()
-        .any(|e| matches!(e, StreamEvent::ToolUse { .. })));
-    assert!(!events
-        .iter()
-        .any(|e| matches!(e, StreamEvent::ToolResult { .. })));
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, StreamEvent::ToolUse { .. }))
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, StreamEvent::ToolResult { .. }))
+    );
 }

@@ -136,8 +136,7 @@ impl Provider for AnthropicProvider {
             .header("content-type", "application/json")
             .json(&body);
 
-        let mut es = EventSource::new(http_req)
-            .context("Failed to create event source")?;
+        let mut es = EventSource::new(http_req).context("Failed to create event source")?;
 
         let mut blocks: Vec<BlockAccumulator> = Vec::new();
         let mut stop_reason = StopReason::EndTurn;
@@ -207,18 +206,18 @@ impl Provider for AnthropicProvider {
                         }
 
                         SseEvent::ContentBlockStop { index } => {
-                            if let Some(block) = blocks.get_mut(index) {
-                                if let ContentBlockInfo::ToolUse { ref id, ref name } = block.info {
-                                    let input: serde_json::Value =
-                                        serde_json::from_str(&block.json_buf).unwrap_or_default();
-                                    let _ = tx
-                                        .send(Chunk::ToolUse {
-                                            id: id.clone(),
-                                            name: name.clone(),
-                                            input,
-                                        })
-                                        .await;
-                                }
+                            if let Some(block) = blocks.get_mut(index)
+                                && let ContentBlockInfo::ToolUse { ref id, ref name } = block.info
+                            {
+                                let input: serde_json::Value =
+                                    serde_json::from_str(&block.json_buf).unwrap_or_default();
+                                let _ = tx
+                                    .send(Chunk::ToolUse {
+                                        id: id.clone(),
+                                        name: name.clone(),
+                                        input,
+                                    })
+                                    .await;
                             }
                         }
 
@@ -264,10 +263,12 @@ impl Provider for AnthropicProvider {
             })
             .collect();
 
-        let _ = tx.send(Chunk::Done {
-            stop_reason,
-            content,
-        }).await;
+        let _ = tx
+            .send(Chunk::Done {
+                stop_reason,
+                content,
+            })
+            .await;
 
         Ok(())
     }

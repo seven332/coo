@@ -93,9 +93,7 @@ async fn main() -> anyhow::Result<()> {
     let (event_tx, mut event_rx) = mpsc::channel::<StreamEvent>(128);
 
     // Spawn the agent loop.
-    let agent_handle = tokio::spawn(async move {
-        agent.run(prompt, event_tx).await
-    });
+    let agent_handle = tokio::spawn(async move { agent.run(prompt, event_tx).await });
 
     // Stream events as NDJSON to stdout.
     while let Some(event) = event_rx.recv().await {

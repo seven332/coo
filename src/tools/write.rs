@@ -48,10 +48,10 @@ impl Tool for WriteTool {
         };
 
         // Ensure parent directory exists.
-        if let Some(parent) = std::path::Path::new(&input.file_path).parent() {
-            if let Err(e) = tokio::fs::create_dir_all(parent).await {
-                return ToolResult::error(format!("Failed to create directory: {e}"));
-            }
+        if let Some(parent) = std::path::Path::new(&input.file_path).parent()
+            && let Err(e) = tokio::fs::create_dir_all(parent).await
+        {
+            return ToolResult::error(format!("Failed to create directory: {e}"));
         }
 
         match tokio::fs::write(&input.file_path, &input.content).await {

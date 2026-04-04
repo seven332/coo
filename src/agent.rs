@@ -138,9 +138,9 @@ impl Agent {
 
             // Wait for chunk processor to finish.
             let _ = chunk_processor.await;
-            let (tool_uses, final_content, stop_reason) = done_rx.await.unwrap_or_else(|_| {
-                (Vec::new(), Vec::new(), StopReason::EndTurn)
-            });
+            let (tool_uses, final_content, stop_reason) = done_rx
+                .await
+                .unwrap_or_else(|_| (Vec::new(), Vec::new(), StopReason::EndTurn));
 
             // Add assistant message to conversation.
             messages.push(Message {
@@ -351,12 +351,16 @@ mod tests {
         agent.run("hi".into(), tx).await.unwrap();
         let events = handle.await.unwrap();
 
-        assert!(events
-            .iter()
-            .any(|e| matches!(e, StreamEvent::Text { text } if text == "Hello!")));
-        assert!(events
-            .iter()
-            .any(|e| matches!(e, StreamEvent::Done { reason } if reason == "end_turn")));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, StreamEvent::Text { text } if text == "Hello!"))
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, StreamEvent::Done { reason } if reason == "end_turn"))
+        );
     }
 
     #[tokio::test]
@@ -371,15 +375,21 @@ mod tests {
         let events = handle.await.unwrap();
 
         // Should see: ToolUse → ToolResult → Text → Done
-        assert!(events
-            .iter()
-            .any(|e| matches!(e, StreamEvent::ToolUse { name, .. } if name == "bash")));
-        assert!(events
-            .iter()
-            .any(|e| matches!(e, StreamEvent::ToolResult { is_error, .. } if !is_error)));
-        assert!(events
-            .iter()
-            .any(|e| matches!(e, StreamEvent::Done { reason } if reason == "end_turn")));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, StreamEvent::ToolUse { name, .. } if name == "bash"))
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, StreamEvent::ToolResult { is_error, .. } if !is_error))
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, StreamEvent::Done { reason } if reason == "end_turn"))
+        );
     }
 
     #[tokio::test]
@@ -394,12 +404,16 @@ mod tests {
         assert!(result.is_err());
 
         let events = handle.await.unwrap();
-        assert!(events
-            .iter()
-            .any(|e| matches!(e, StreamEvent::Error { .. })));
-        assert!(events
-            .iter()
-            .any(|e| matches!(e, StreamEvent::Done { reason } if reason == "error")));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, StreamEvent::Error { .. }))
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, StreamEvent::Done { reason } if reason == "error"))
+        );
     }
 
     #[tokio::test]
@@ -414,9 +428,11 @@ mod tests {
         agent.run("loop".into(), tx).await.unwrap();
         let events = handle.await.unwrap();
 
-        assert!(events
-            .iter()
-            .any(|e| matches!(e, StreamEvent::Done { reason } if reason == "max_iterations")));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, StreamEvent::Done { reason } if reason == "max_iterations"))
+        );
 
         // Should have exactly 3 tool use events (one per iteration).
         let tool_use_count = events

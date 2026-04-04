@@ -55,10 +55,7 @@ impl Tool for BashTool {
 
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(input.timeout),
-            Command::new("bash")
-                .arg("-c")
-                .arg(&input.command)
-                .output(),
+            Command::new("bash").arg("-c").arg(&input.command).output(),
         )
         .await;
 
@@ -128,7 +125,9 @@ mod tests {
     #[tokio::test]
     async fn timeout() {
         let tool = BashTool;
-        let result = tool.call(json!({"command": "sleep 10", "timeout": 1})).await;
+        let result = tool
+            .call(json!({"command": "sleep 10", "timeout": 1}))
+            .await;
         assert!(result.is_error);
     }
 
