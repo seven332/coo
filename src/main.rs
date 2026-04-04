@@ -4,7 +4,7 @@ use tracing_subscriber::EnvFilter;
 
 use you_mind::agent::Agent;
 use you_mind::message::StreamEvent;
-use you_mind::provider::AnthropicProvider;
+use you_mind::provider::{AnthropicProvider, MeowProvider, Provider};
 use you_mind::tools::ToolRegistry;
 
 #[derive(Parser)]
@@ -18,6 +18,10 @@ struct Cli {
     #[arg(short, long, default_value = "claude-sonnet-4-20250514")]
     model: String,
 
+    /// Provider to use: "anthropic" or "meow".
+    #[arg(long, default_value = "anthropic")]
+    provider: String,
+
     /// System prompt.
     #[arg(short, long)]
     system: Option<String>,
@@ -26,9 +30,9 @@ struct Cli {
     #[arg(long, env = "ANTHROPIC_BASE_URL")]
     base_url: Option<String>,
 
-    /// API key (required, or set ANTHROPIC_API_KEY).
+    /// API key (required for anthropic provider, or set ANTHROPIC_API_KEY).
     #[arg(long, env = "ANTHROPIC_API_KEY")]
-    api_key: String,
+    api_key: Option<String>,
 
     /// Max output tokens per LLM call.
     #[arg(long, default_value = "16384")]
@@ -65,11 +69,25 @@ async fn main() -> anyhow::Result<()> {
         std::process::exit(1);
     };
 
-    let provider = AnthropicProvider::new(cli.api_key, cli.base_url);
+    let provider: Box<dyn Provider> = match cli.provider.as_str() {
+        "meow" => Box::new(MeowProvider),
+        "anthropic" => {
+            let api_key = cli.api_key.unwrap_or_else(|| {
+                eprintln!("Error: ANTHROPIC_API_KEY is required for anthropic provider");
+                std::process::exit(2);
+            });
+            Box::new(AnthropicProvider::new(api_key, cli.base_url))
+        }
+        other => {
+            eprintln!("Error: unknown provider: {other}");
+            std::process::exit(1);
+        }
+    };
+
     let tools = ToolRegistry::with_defaults();
     let system = cli.system.unwrap_or_else(|| DEFAULT_SYSTEM.to_string());
 
-    let mut agent = Agent::new(Box::new(provider), tools, cli.model, system);
+    let mut agent = Agent::new(provider, tools, cli.model, system);
     agent.max_tokens = cli.max_tokens;
 
     let (event_tx, mut event_rx) = mpsc::channel::<StreamEvent>(128);
