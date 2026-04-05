@@ -438,9 +438,10 @@ mod tests {
     fn has_assistant_with_text(events: &[StreamEvent], expected: &str) -> bool {
         events.iter().any(|e| {
             if let StreamEvent::Assistant { message, .. } = e {
-                message.content.iter().any(|c| {
-                    matches!(c, ContentBlock::Text { text } if text.contains(expected))
-                })
+                message
+                    .content
+                    .iter()
+                    .any(|c| matches!(c, ContentBlock::Text { text } if text.contains(expected)))
             } else {
                 false
             }
@@ -570,12 +571,7 @@ mod tests {
 
     #[tokio::test]
     async fn session_id_consistent() {
-        let agent = make_agent(
-            TextProvider {
-                text: "hi".into(),
-            },
-            ToolRegistry::new(),
-        );
+        let agent = make_agent(TextProvider { text: "hi".into() }, ToolRegistry::new());
 
         let (tx, rx) = mpsc::channel(64);
         let handle = tokio::spawn(async move { collect_events(rx).await });
@@ -641,7 +637,10 @@ mod tests {
                 false
             }
         });
-        assert!(has_thinking_event, "thinking should be forwarded as RawEvent");
+        assert!(
+            has_thinking_event,
+            "thinking should be forwarded as RawEvent"
+        );
     }
 
     #[tokio::test]
@@ -668,9 +667,11 @@ mod tests {
         let events = handle.await.unwrap();
 
         // Should still get Assistant and Result events.
-        assert!(events
-            .iter()
-            .any(|e| matches!(e, StreamEvent::Assistant { .. })));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, StreamEvent::Assistant { .. }))
+        );
         assert!(has_result(&events, "success"));
 
         // Result text should be empty.
@@ -773,7 +774,10 @@ mod tests {
             })
             .max()
             .unwrap_or(0);
-        assert_eq!(tool_result_count, 2, "should have 2 tool results in one user message");
+        assert_eq!(
+            tool_result_count, 2,
+            "should have 2 tool results in one user message"
+        );
         assert!(has_result(&events, "success"));
     }
 }
