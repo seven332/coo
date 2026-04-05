@@ -209,10 +209,14 @@ mod tests {
     #[test]
     fn serialize_stream_event_assistant() {
         let event = StreamEvent::Assistant {
-            message: Message {
-                role: Role::Assistant,
-                content: vec![ContentBlock::Text { text: "hi".into() }],
-            },
+            message: json!({
+                "type": "message",
+                "role": "assistant",
+                "model": "test-model",
+                "id": "msg_01",
+                "content": [{"type": "text", "text": "hi"}],
+                "stop_reason": "end_turn",
+            }),
             parent_tool_use_id: json!(null),
             session_id: "sid".into(),
             uuid: "uid".into(),
@@ -220,6 +224,9 @@ mod tests {
         let json = serde_json::to_value(&event).unwrap();
         assert_eq!(json["type"], "assistant");
         assert_eq!(json["message"]["role"], "assistant");
+        assert_eq!(json["message"]["model"], "test-model");
+        assert_eq!(json["message"]["id"], "msg_01");
+        assert_eq!(json["message"]["stop_reason"], "end_turn");
         assert!(json["parent_tool_use_id"].is_null());
     }
 
@@ -231,6 +238,7 @@ mod tests {
             is_error: false,
             num_turns: 1,
             result: Some("done".into()),
+            stop_reason: Some("end_turn".into()),
             session_id: "sid".into(),
             uuid: "uid".into(),
         };
@@ -239,6 +247,7 @@ mod tests {
         assert_eq!(json["subtype"], "success");
         assert_eq!(json["is_error"], false);
         assert_eq!(json["result"], "done");
+        assert_eq!(json["stop_reason"], "end_turn");
     }
 
     #[test]
@@ -249,12 +258,14 @@ mod tests {
             is_error: true,
             num_turns: 1,
             result: None,
+            stop_reason: None,
             session_id: "sid".into(),
             uuid: "uid".into(),
         };
         let json = serde_json::to_value(&event).unwrap();
         assert_eq!(json["type"], "result");
         assert!(json.get("result").is_none());
+        assert!(json.get("stop_reason").is_none());
     }
 
     #[test]
@@ -303,10 +314,10 @@ pub enum StreamEvent {
         session_id: String,
         uuid: String,
     },
-    /// Complete assistant message.
+    /// Complete assistant message (full API response format).
     #[serde(rename = "assistant")]
     Assistant {
-        message: Message,
+        message: serde_json::Value,
         parent_tool_use_id: serde_json::Value,
         session_id: String,
         uuid: String,
@@ -336,6 +347,8 @@ pub enum StreamEvent {
         num_turns: usize,
         #[serde(skip_serializing_if = "Option::is_none")]
         result: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        stop_reason: Option<String>,
         session_id: String,
         uuid: String,
     },

@@ -6,7 +6,7 @@ use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 use crate::message::{ContentBlock, Message, Role, StreamEvent, new_uuid};
-use crate::provider::{Chunk, Provider, Request, ServerTool, StopReason};
+use crate::provider::{Chunk, Provider, Request, ResponseMeta, ServerTool, StopReason};
 use crate::tools::{ToolContext, ToolRegistry};
 
 pub const DEFAULT_MAX_TOKENS: u32 = 32000;
@@ -123,9 +123,13 @@ impl Agent {
                 let mut tool_uses = Vec::new();
                 let mut final_content = Vec::new();
                 let mut stop = StopReason::EndTurn;
+                let mut response_meta: Option<ResponseMeta> = None;
 
                 while let Some(chunk) = chunk_rx.recv().await {
                     match chunk {
+                        Chunk::Meta(m) => {
+                            response_meta = Some(m);
+                        }
                         Chunk::Text(text) => {
                             let _ = event_tx2
                                 .send(StreamEvent::RawEvent {
@@ -175,7 +179,7 @@ impl Agent {
                     }
                 }
 
-                let _ = done_tx.send((tool_uses, final_content, stop));
+                let _ = done_tx.send((tool_uses, final_content, stop, response_meta));
             });
 
             // Drive the provider to completion.
@@ -190,6 +194,7 @@ impl Agent {
                         is_error: true,
                         num_turns,
                         result: None,
+                        stop_reason: None,
                         session_id: sid,
                         uuid: uid,
                     })
@@ -199,19 +204,42 @@ impl Agent {
 
             // Wait for chunk processor to finish.
             let _ = chunk_processor.await;
-            let (tool_uses, final_content, stop_reason) = done_rx
+            let (tool_uses, final_content, stop_reason, response_meta) = done_rx
                 .await
-                .unwrap_or_else(|_| (Vec::new(), Vec::new(), StopReason::EndTurn));
+                .unwrap_or_else(|_| (Vec::new(), Vec::new(), StopReason::EndTurn, None));
 
             // Add assistant message to conversation and emit event.
             let assistant_msg = Message {
                 role: Role::Assistant,
                 content: final_content,
             };
+
+            // Build full API-format message for the event.
+            let stop_str = match stop_reason {
+                StopReason::EndTurn => "end_turn",
+                StopReason::ToolUse => "tool_use",
+                StopReason::MaxTokens => "max_tokens",
+            };
+            let mut api_message = json!({
+                "type": "message",
+                "role": "assistant",
+                "content": serde_json::to_value(&assistant_msg.content).unwrap_or_default(),
+                "model": response_meta.as_ref().map(|m| m.model.as_str()).unwrap_or(&self.model),
+                "stop_reason": stop_str,
+            });
+            if let Some(ref meta) = response_meta {
+                if !meta.message_id.is_empty() {
+                    api_message["id"] = json!(meta.message_id);
+                }
+                if !meta.usage.is_null() {
+                    api_message["usage"] = meta.usage.clone();
+                }
+            }
+
             let (sid, uid) = self.event_meta();
             let _ = event_tx
                 .send(StreamEvent::Assistant {
-                    message: assistant_msg.clone(),
+                    message: api_message,
                     parent_tool_use_id: json!(null),
                     session_id: sid,
                     uuid: uid,
@@ -244,6 +272,7 @@ impl Agent {
                         is_error: false,
                         num_turns,
                         result: Some(result_text),
+                        stop_reason: Some(stop_str.to_string()),
                         session_id: sid,
                         uuid: uid,
                     })
@@ -297,6 +326,7 @@ impl Agent {
                 is_error: true,
                 num_turns,
                 result: None,
+                stop_reason: None,
                 session_id: sid,
                 uuid: uid,
             })
@@ -439,9 +469,16 @@ mod tests {
         events.iter().any(|e| {
             if let StreamEvent::Assistant { message, .. } = e {
                 message
-                    .content
-                    .iter()
-                    .any(|c| matches!(c, ContentBlock::Text { text } if text.contains(expected)))
+                    .get("content")
+                    .and_then(|c| c.as_array())
+                    .is_some_and(|blocks| {
+                        blocks.iter().any(|b| {
+                            b.get("type").and_then(|t| t.as_str()) == Some("text")
+                                && b.get("text")
+                                    .and_then(|t| t.as_str())
+                                    .is_some_and(|t| t.contains(expected))
+                        })
+                    })
             } else {
                 false
             }

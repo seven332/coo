@@ -78,9 +78,13 @@ impl Tool for AgentTool {
         while let Some(event) = event_rx.recv().await {
             match event {
                 StreamEvent::Assistant { ref message, .. } => {
-                    for block in &message.content {
-                        if let crate::message::ContentBlock::Text { text } = block {
-                            output.push_str(text);
+                    if let Some(content) = message.get("content").and_then(|c| c.as_array()) {
+                        for block in content {
+                            if block.get("type").and_then(|t| t.as_str()) == Some("text") {
+                                if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
+                                    output.push_str(text);
+                                }
+                            }
                         }
                     }
                 }

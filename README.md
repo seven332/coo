@@ -12,7 +12,7 @@ coo --prompt "list all files in /tmp"
 echo "create a hello.py file" | coo --stdin
 
 # Custom model and system prompt
-coo --prompt "fix the bug" --model claude-sonnet-4-20250514 --system "You are a Rust expert."
+coo --prompt "fix the bug" --model claude-sonnet-4-6 --system "You are a Rust expert."
 
 # Enable web search (Anthropic provider only)
 coo --web-search --prompt "what is the latest Rust version?"

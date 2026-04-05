@@ -105,9 +105,16 @@ fn has_assistant_with_text(events: &[StreamEvent], expected: &str) -> bool {
     events.iter().any(|e| {
         if let StreamEvent::Assistant { message, .. } = e {
             message
-                .content
-                .iter()
-                .any(|c| matches!(c, ContentBlock::Text { text } if text.contains(expected)))
+                .get("content")
+                .and_then(|c| c.as_array())
+                .is_some_and(|blocks| {
+                    blocks.iter().any(|b| {
+                        b.get("type").and_then(|t| t.as_str()) == Some("text")
+                            && b.get("text")
+                                .and_then(|t| t.as_str())
+                                .is_some_and(|t| t.contains(expected))
+                    })
+                })
         } else {
             false
         }
