@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::mpsc;
+use tracing::info;
 
 use crate::agent::Agent;
 use crate::message::{StreamEvent, ToolResult};
@@ -15,6 +16,8 @@ pub struct AgentTool;
 #[derive(Deserialize)]
 struct Input {
     prompt: String,
+    #[serde(default)]
+    description: Option<String>,
     #[serde(default)]
     model: Option<String>,
     #[serde(default)]
@@ -40,6 +43,10 @@ impl Tool for AgentTool {
                     "type": "string",
                     "description": "The task for the sub-agent to perform"
                 },
+                "description": {
+                    "type": "string",
+                    "description": "A short (3-5 word) description of the task"
+                },
                 "model": {
                     "type": "string",
                     "description": "Optional model override (e.g. 'claude-sonnet-4-6', 'claude-haiku-4-5-20251001')"
@@ -63,6 +70,7 @@ impl Tool for AgentTool {
             return ToolResult::error(format!("Max agent depth {} reached", context.max_depth));
         }
 
+        let description = input.description.unwrap_or_default();
         let model = input.model.unwrap_or_else(|| context.model.clone());
         let system = input.system.unwrap_or_else(|| context.system.clone());
 
@@ -82,6 +90,7 @@ impl Tool for AgentTool {
 
         let prompt = input.prompt;
         let agent_id = agent.session_id.clone();
+        info!(agent_id, description, "Spawning sub-agent");
         let handle = tokio::spawn(async move { agent.run(prompt, event_tx).await });
 
         // Collect the sub-agent's text output and usage from events.
