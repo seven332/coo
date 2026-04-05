@@ -37,7 +37,7 @@ struct Cli {
     api_key: Option<String>,
 
     /// Max output tokens per LLM call.
-    #[arg(long, default_value = "16384")]
+    #[arg(long, default_value = "32000")]
     max_tokens: u32,
 
     /// Enable web search (Anthropic provider only).
