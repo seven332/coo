@@ -73,14 +73,24 @@ impl Tool for AgentTool {
         let prompt = input.prompt;
         let handle = tokio::spawn(async move { agent.run(prompt, event_tx).await });
 
-        // Collect the sub-agent's text output.
+        // Collect the sub-agent's text output from assistant messages.
         let mut output = String::new();
         while let Some(event) = event_rx.recv().await {
             match event {
-                StreamEvent::Text { text } => output.push_str(&text),
-                StreamEvent::Error { message } => {
+                StreamEvent::Assistant { ref message, .. } => {
+                    for block in &message.content {
+                        if let crate::message::ContentBlock::Text { text } = block {
+                            output.push_str(text);
+                        }
+                    }
+                }
+                StreamEvent::Result {
+                    is_error: true,
+                    subtype,
+                    ..
+                } => {
                     handle.abort();
-                    return ToolResult::error(format!("Sub-agent error: {message}"));
+                    return ToolResult::error(format!("Sub-agent error: {subtype}"));
                 }
                 _ => {}
             }

@@ -24,7 +24,7 @@ coo is a headless AI agent CLI written in Rust, designed to run in sandbox envir
 
 **Tool system** (`src/tools/`): The `Tool` trait requires `name()`, `description()`, `input_schema()` (JSON Schema), and `async fn call(input, &ToolContext)`. `ToolContext` provides shared access to the provider, tool registry, model config, and depth tracking. Tools are registered in `ToolRegistry::with_defaults()`.
 
-**Message types** (`src/message.rs`): `Message` (role + content blocks), `ContentBlock` (text/tool_use/tool_result/thinking), `ToolResult`, and `StreamEvent` (the NDJSON output events).
+**Message types** (`src/message.rs`): `Message` (role + content blocks), `ContentBlock` (text/tool_use/tool_result/thinking), `ToolResult`, and `StreamEvent` (Claude Code `stream-json` compatible NDJSON events: `system/init`, `user`, `assistant`, `stream_event`, `result`).
 
 **Entry point** (`src/main.rs`): CLI arg parsing via clap, wires up provider + tools + agent, spawns the agent loop on tokio, and prints stream events as NDJSON lines.
 
@@ -41,3 +41,5 @@ Use [Conventional Commits v1.0.0](https://www.conventionalcommits.org/en/v1.0.0/
 - Bash tool uses `kill_on_drop(true)` to prevent orphan processes on timeout.
 - Server-side tools (e.g. web_search) are passed through to the provider via `Request.server_tools`. The provider includes them in the API request; the server executes them and returns results inline. They are not executed locally.
 - Logs go to stderr (`tracing`), NDJSON events go to stdout — clean separation for piping.
+- StreamEvent format is compatible with Claude Code's `--output-format stream-json`. Each event carries `session_id` and `uuid`.
+- Anthropic provider conditionally enables adaptive thinking and effort control — Haiku does not support these features.

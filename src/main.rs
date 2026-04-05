@@ -4,8 +4,8 @@ use clap::Parser;
 use tokio::sync::mpsc;
 use tracing_subscriber::EnvFilter;
 
-use coo::agent::Agent;
-use coo::message::StreamEvent;
+use coo::agent::{Agent, DEFAULT_MAX_TOKENS};
+use coo::message::{StreamEvent, new_uuid};
 use coo::provider::{AnthropicProvider, MeowProvider, Provider, ServerTool};
 use coo::tools::ToolRegistry;
 
@@ -37,7 +37,7 @@ struct Cli {
     api_key: Option<String>,
 
     /// Max output tokens per LLM call.
-    #[arg(long, default_value = "32000")]
+    #[arg(long, default_value_t = DEFAULT_MAX_TOKENS)]
     max_tokens: u32,
 
     /// Enable web search (Anthropic provider only).
@@ -111,6 +111,7 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let tools = Arc::new(ToolRegistry::with_defaults());
+    let tool_names: Vec<String> = tools.definitions().iter().map(|t| t.name.clone()).collect();
     let system = cli.system.unwrap_or_else(|| DEFAULT_SYSTEM.to_string());
 
     let mut agent = Agent::new(provider, tools, cli.model, system);
@@ -121,6 +122,20 @@ async fn main() -> anyhow::Result<()> {
             max_uses: Some(8),
         });
     }
+
+    // Emit system/init event.
+    let init_event = StreamEvent::System {
+        subtype: "init".to_string(),
+        data: serde_json::json!({
+            "tools": tool_names,
+            "model": &agent.model,
+            "cwd": std::env::current_dir().unwrap_or_default().to_string_lossy(),
+        }),
+        session_id: agent.session_id.clone(),
+        uuid: new_uuid(),
+    };
+    let json = serde_json::to_string(&init_event)?;
+    println!("{json}");
 
     let (event_tx, mut event_rx) = mpsc::channel::<StreamEvent>(128);
 

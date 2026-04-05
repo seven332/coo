@@ -30,12 +30,14 @@ Output is streamed as NDJSON (one JSON event per line) to stdout.
 
 ## Event Types
 
+Output follows the Claude Code `stream-json` format (NDJSON):
+
 ```jsonl
-{"type":"thinking","thinking":"Let me analyze..."}
-{"type":"text","text":"I'll create the file."}
-{"type":"tool_use","id":"toolu_01","name":"bash","input":{"command":"ls"}}
-{"type":"tool_result","tool_use_id":"toolu_01","content":"file1\nfile2","is_error":false}
-{"type":"done","reason":"end_turn"}
+{"type":"system","subtype":"init","tools":["bash","read",...],"model":"claude-sonnet-4-6","cwd":"/workspace","session_id":"...","uuid":"..."}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"list files"}]},"parent_tool_use_id":null,"session_id":"...","uuid":"..."}
+{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Here are"}},"parent_tool_use_id":null,"session_id":"...","uuid":"..."}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Here are the files."}]},"parent_tool_use_id":null,"session_id":"...","uuid":"..."}
+{"type":"result","subtype":"success","duration_ms":1234,"is_error":false,"num_turns":1,"result":"Here are the files.","session_id":"...","uuid":"..."}
 ```
 
 ## Built-in Tools
