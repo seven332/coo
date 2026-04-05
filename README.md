@@ -1,6 +1,6 @@
 # coo
 
-An AI agent CLI designed for sandbox environments. Similar to Claude Code, but runs headless with NDJSON streaming output — no terminal UI needed.
+CooCoo is an AI agent CLI designed for sandbox environments. Similar to Claude Code, but runs headless with NDJSON streaming output — no terminal UI needed.
 
 ## Usage
 
