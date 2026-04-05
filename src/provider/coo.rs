@@ -6,101 +6,100 @@ use tokio::sync::mpsc;
 use super::{Chunk, Provider, Request, StopReason};
 use crate::message::ContentBlock;
 
-const MEOWS: &[&str] = &[
+const COOS: &[&str] = &[
     // Chinese
-    "喵~",
-    "喵喵喵！",
-    "喵？",
-    "喵呜~",
-    "喵喵喵喵喵喵喵！！！",
+    "咕咕~",
+    "咕咕咕！",
+    "咕？",
+    "咕噜噜~",
+    "咕咕咕咕咕咕咕！！！",
     // English
-    "meow~",
-    "meoooow",
-    "prrrrrr",
-    "hiss!",
-    "mew mew",
+    "coo~",
+    "coo coo",
+    "coooooo",
+    "brrrr",
+    "coo coo coo!",
     // Japanese
-    "にゃ〜",
-    "にゃんにゃん！",
-    "nyaa~",
-    "ニャー",
+    "ぽっぽ〜",
+    "くるっくー！",
+    "ポッポ",
     // Korean
-    "야옹~",
-    "냐옹냐옹！",
+    "구구~",
+    "구구구구!",
     // French
-    "miaou~",
-    "miaou miaou !",
+    "roucou~",
+    "roucou roucou !",
     // German
-    "miau~",
-    "miau miau!",
+    "gurr~",
+    "gurr gurr!",
     // Spanish
-    "miau~",
-    "¡miau miau!",
+    "curu~",
+    "¡cucurrucucú!",
     // Russian
-    "мяу~",
-    "мяу мяу!",
+    "гуль-гуль~",
+    "курлык!",
     // Italian
-    "miao~",
-    "miao miao!",
+    "tu tu~",
+    "tu tu ru!",
     // Thai
-    "เหมียว~",
+    "กุ๊กกรู~",
     // Arabic
-    "مياو~",
+    "هدهد~",
     // Turkish
-    "miyav~",
-    // Actions (multilingual)
-    "(蹭蹭)",
-    "(翻肚皮)",
-    "(打翻水杯)",
-    "(盯着你看)",
-    "(疯狂跑酷)",
-    "(purring intensifies)",
-    "(knocks things off table)",
-    "(sits in box)",
-    "(ゴロゴロ)",
-    "(꾹꾹이)",
+    "gugu~",
+    // Actions
+    "(点头走路)",
+    "(啄食面包屑)",
+    "(歪头看你)",
+    "(抖翅膀)",
+    "(在广场散步)",
+    "(head bobbing intensifies)",
+    "(pecks at breadcrumbs)",
+    "(struts confidently)",
+    "(ポッポと歩く)",
+    "(머리를 까딱까딱)",
 ];
 
 const THOUGHTS: &[&str] = &[
-    "让我想想...要不要跳上桌子...",
-    "这个纸箱看起来很好坐",
-    "红点！红点在哪！",
-    "主人在说什么？算了不重要",
-    "鱼鱼鱼鱼鱼",
-    "Should I knock this off the table? ...yes.",
-    "あの赤い点...捕まえなきゃ！",
-    "Soll ich auf den Tisch springen?",
-    "Ce carton a l'air parfait pour s'asseoir",
-    "그 빨간 점... 잡아야 해!",
-    "¿Debería tumbarme aquí? ...sí.",
-    "Может прыгнуть на стол? ...да.",
+    "那块面包看起来不错...",
+    "要不要飞到那个屋顶上...",
+    "这个广场是我的地盘",
+    "人类在说什么？算了继续走",
+    "面包面包面包",
+    "Should I land on that statue? ...yes.",
+    "あのパン屑...食べなきゃ！",
+    "Soll ich auf die Statue fliegen?",
+    "Cette place est parfaite pour se promener",
+    "그 빵 부스러기... 먹어야 해!",
+    "¿Debería caminar por aquí? ...sí.",
+    "Может сесть на памятник? ...да.",
 ];
 
 const BASH_COMMANDS: &[&str] = &[
-    "echo 喵",
+    "echo 咕咕",
     "date",
     "whoami",
     "ls",
     "pwd",
-    "echo purrrr",
+    "echo coo~",
     "cat /dev/null",
-    "echo 🐱",
+    "echo 🐦",
     "uname -a",
-    "echo meow | rev",
+    "echo coo | rev",
 ];
 
 const READ_FILES: &[&str] = &[
     "/etc/hostname",
     "/etc/shells",
-    "/tmp/.meow",
+    "/tmp/.coo",
     "Cargo.toml",
     "README.md",
 ];
 
-pub struct MeowProvider;
+pub struct CooProvider;
 
 /// All random decisions made before any await.
-struct MeowPlan {
+struct CooPlan {
     thought: Option<String>,
     text: String,
     tool_call: Option<ToolCall>,
@@ -112,18 +111,18 @@ struct ToolCall {
     input: serde_json::Value,
 }
 
-fn plan(req: &Request) -> MeowPlan {
+fn plan(req: &Request) -> CooPlan {
     let mut rng = rand::rng();
 
-    // Build meow text.
-    let meow_count = rng.random_range(1..=5);
+    // Build coo text.
+    let coo_count = rng.random_range(1..=5);
     let mut text = String::new();
-    for _ in 0..meow_count {
-        let meow = MEOWS[rng.random_range(0..MEOWS.len())];
+    for _ in 0..coo_count {
+        let coo = COOS[rng.random_range(0..COOS.len())];
         if !text.is_empty() {
             text.push(' ');
         }
-        text.push_str(meow);
+        text.push_str(coo);
     }
 
     // Maybe think.
@@ -137,7 +136,7 @@ fn plan(req: &Request) -> MeowPlan {
     let tool_call = if rng.random_bool(0.6) && !req.tools.is_empty() {
         let tool = &req.tools[rng.random_range(0..req.tools.len())];
         let input = random_input_for_tool(&tool.name, &mut rng);
-        let id = format!("meow_{}", rng.random_range(1000..9999));
+        let id = format!("coo_{}", rng.random_range(1000..9999));
         Some(ToolCall {
             id,
             name: tool.name.clone(),
@@ -147,7 +146,7 @@ fn plan(req: &Request) -> MeowPlan {
         None
     };
 
-    MeowPlan {
+    CooPlan {
         thought,
         text,
         tool_call,
@@ -163,9 +162,9 @@ fn random_input_for_tool(name: &str, rng: &mut impl rand::Rng) -> serde_json::Va
             json!({"file_path": READ_FILES[rng.random_range(0..READ_FILES.len())]})
         }
         "write" => {
-            let content = MEOWS[rng.random_range(0..MEOWS.len())];
+            let content = COOS[rng.random_range(0..COOS.len())];
             json!({
-                "file_path": format!("/tmp/meow_{}.txt", rng.random_range(0..100)),
+                "file_path": format!("/tmp/coo_{}.txt", rng.random_range(0..100)),
                 "content": content,
             })
         }
@@ -174,7 +173,7 @@ fn random_input_for_tool(name: &str, rng: &mut impl rand::Rng) -> serde_json::Va
 }
 
 #[async_trait]
-impl Provider for MeowProvider {
+impl Provider for CooProvider {
     async fn request(&self, req: Request, tx: mpsc::Sender<Chunk>) -> anyhow::Result<()> {
         let plan = plan(&req);
 

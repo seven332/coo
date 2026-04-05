@@ -6,7 +6,7 @@ use tracing_subscriber::EnvFilter;
 
 use coo::agent::{Agent, DEFAULT_MAX_TOKENS};
 use coo::message::{StreamEvent, new_uuid};
-use coo::provider::{AnthropicProvider, MeowProvider, Provider, ServerTool};
+use coo::provider::{AnthropicProvider, CooProvider, Provider, ServerTool};
 use coo::tools::ToolRegistry;
 
 #[derive(Parser)]
@@ -20,7 +20,7 @@ struct Cli {
     #[arg(short, long, default_value = "claude-sonnet-4-6")]
     model: String,
 
-    /// Provider to use: "anthropic" or "meow".
+    /// Provider to use: "anthropic" or "coo".
     #[arg(long, default_value = "anthropic")]
     provider: String,
 
@@ -96,7 +96,7 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let provider: Arc<dyn Provider> = match cli.provider.as_str() {
-        "meow" => Arc::new(MeowProvider),
+        "coo" => Arc::new(CooProvider),
         "anthropic" => {
             let api_key = cli.api_key.unwrap_or_else(|| {
                 eprintln!("Error: ANTHROPIC_API_KEY is required for anthropic provider");
