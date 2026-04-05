@@ -20,7 +20,7 @@ coo is a headless AI agent CLI written in Rust, designed to run in sandbox envir
 
 **Agent loop** (`src/agent.rs`): The core loop. Sends messages to the LLM, receives streaming chunks, executes tool calls, appends results back to the conversation, and repeats until the model stops requesting tools or hits max iterations. Uses `Arc<dyn Provider>` and `Arc<ToolRegistry>` to support sub-agent spawning.
 
-**Provider abstraction** (`src/provider/`): The `Provider` trait defines `async fn request(&self, req, tx)` where `tx` is an mpsc channel for streaming `Chunk` events. Each LLM backend implements this trait. Providers: `AnthropicProvider` (SSE streaming), `MeowProvider` (random test provider).
+**Provider abstraction** (`src/provider/`): The `Provider` trait defines `async fn request(&self, req, tx)` where `tx` is an mpsc channel for streaming `Chunk` events. Each LLM backend implements this trait. Providers: `AnthropicProvider` (SSE streaming), `CooProvider` (random pigeon test provider).
 
 **Tool system** (`src/tools/`): The `Tool` trait requires `name()`, `description()`, `input_schema()` (JSON Schema), and `async fn call(input, &ToolContext)`. `ToolContext` provides shared access to the provider, tool registry, model config, and depth tracking. Tools are registered in `ToolRegistry::with_defaults()`.
 

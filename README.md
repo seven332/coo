@@ -17,8 +17,8 @@ coo --prompt "fix the bug" --model claude-sonnet-4-6 --system "You are a Rust ex
 # Enable web search (Anthropic provider only)
 coo --web-search --prompt "what is the latest Rust version?"
 
-# Use the meow provider for testing (no API key needed)
-coo --provider meow --prompt "hello"
+# Use the coo provider for testing (no API key needed)
+coo --provider coo --prompt "hello"
 ```
 
 Output is streamed as NDJSON (one JSON event per line) to stdout.

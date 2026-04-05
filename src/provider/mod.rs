@@ -1,8 +1,8 @@
 mod anthropic;
-mod meow;
+mod coo;
 
 pub use anthropic::AnthropicProvider;
-pub use meow::MeowProvider;
+pub use coo::CooProvider;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
