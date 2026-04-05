@@ -4,7 +4,7 @@ use reqwest_eventsource::{Event, EventSource};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
-use super::{Chunk, Provider, Request, StopReason};
+use super::{Chunk, Provider, Request, ResponseMeta, StopReason};
 use crate::message::{ContentBlock, new_uuid as uuid};
 
 pub struct AnthropicProvider {
@@ -284,6 +284,10 @@ impl Provider for AnthropicProvider {
 
         let mut blocks: Vec<BlockAccumulator> = Vec::new();
         let mut stop_reason = StopReason::EndTurn;
+        let mut meta = ResponseMeta {
+            model: req.model.clone(),
+            ..Default::default()
+        };
 
         use futures::StreamExt as _;
         while let Some(event) = es.next().await {
@@ -299,7 +303,19 @@ impl Provider for AnthropicProvider {
                     };
 
                     match sse {
-                        SseEvent::Ping {} | SseEvent::MessageStart { .. } => {}
+                        SseEvent::Ping {} => {}
+
+                        SseEvent::MessageStart { message } => {
+                            if let Some(id) = message.get("id").and_then(|v| v.as_str()) {
+                                meta.message_id = id.to_string();
+                            }
+                            if let Some(model) = message.get("model").and_then(|v| v.as_str()) {
+                                meta.model = model.to_string();
+                            }
+                            if let Some(usage) = message.get("usage") {
+                                meta.usage = usage.clone();
+                            }
+                        }
 
                         SseEvent::ContentBlockStart {
                             index,
@@ -367,7 +383,7 @@ impl Provider for AnthropicProvider {
                             // the server executes them and returns results inline.
                         }
 
-                        SseEvent::MessageDelta { delta, .. } => {
+                        SseEvent::MessageDelta { delta, usage } => {
                             if let Some(reason) = delta.stop_reason {
                                 stop_reason = match reason.as_str() {
                                     "end_turn" => StopReason::EndTurn,
@@ -375,6 +391,9 @@ impl Provider for AnthropicProvider {
                                     "max_tokens" => StopReason::MaxTokens,
                                     _ => StopReason::EndTurn,
                                 };
+                            }
+                            if !usage.is_null() {
+                                meta.usage = usage;
                             }
                         }
 
@@ -420,6 +439,7 @@ impl Provider for AnthropicProvider {
             })
             .collect();
 
+        let _ = tx.send(Chunk::Meta(meta)).await;
         let _ = tx
             .send(Chunk::Done {
                 stop_reason,

@@ -17,7 +17,7 @@ struct Cli {
     prompt: Option<String>,
 
     /// Model to use.
-    #[arg(short, long, default_value = "claude-sonnet-4-20250514")]
+    #[arg(short, long, default_value = "claude-sonnet-4-6")]
     model: String,
 
     /// Provider to use: "anthropic" or "meow".

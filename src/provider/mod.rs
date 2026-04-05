@@ -42,6 +42,14 @@ pub struct Request {
     pub max_tokens: u32,
 }
 
+/// Metadata from the API response (model, message id, usage).
+#[derive(Debug, Clone, Default)]
+pub struct ResponseMeta {
+    pub model: String,
+    pub message_id: String,
+    pub usage: serde_json::Value,
+}
+
 /// Streamed chunk from the LLM.
 #[derive(Debug, Clone)]
 pub enum Chunk {
@@ -55,6 +63,8 @@ pub enum Chunk {
         name: String,
         input: serde_json::Value,
     },
+    /// API response metadata (sent before Done).
+    Meta(ResponseMeta),
     /// The response is done.
     Done {
         stop_reason: StopReason,
