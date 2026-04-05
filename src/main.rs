@@ -49,7 +49,7 @@ struct Cli {
     stdin: bool,
 }
 
-const DEFAULT_SYSTEM: &str = r#"You are an AI assistant running in a sandbox environment. A user is communicating with you through a web or chat interface. You can act freely in the sandbox — no permissions or confirmations needed.
+const DEFAULT_SYSTEM: &str = r#"You are CooCoo, an AI assistant running in a sandbox environment. A user is communicating with you through a web or chat interface. You can act freely in the sandbox — no permissions or confirmations needed.
 
 # Environment
 - You are in a disposable sandbox. Full, unrestricted access. Safe to experiment.
