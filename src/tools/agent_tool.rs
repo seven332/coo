@@ -108,8 +108,7 @@ impl Tool for AgentTool {
                         if let Some(input_t) = usage.get("input_tokens").and_then(|v| v.as_u64()) {
                             total_tokens += input_t;
                         }
-                        if let Some(output_t) =
-                            usage.get("output_tokens").and_then(|v| v.as_u64())
+                        if let Some(output_t) = usage.get("output_tokens").and_then(|v| v.as_u64())
                         {
                             total_tokens += output_t;
                         }
@@ -356,7 +355,10 @@ mod tests {
         let text = match &result.content[0] {
             ToolResultContent::Text { text } => text.as_str(),
         };
-        assert!(text.contains("tool_uses: 1"), "should count 1 tool use, got: {text}");
+        assert!(
+            text.contains("tool_uses: 1"),
+            "should count 1 tool use, got: {text}"
+        );
     }
 
     #[tokio::test]
