@@ -48,12 +48,40 @@ impl AnthropicProvider {
 #[derive(Serialize)]
 struct ApiRequest<'a> {
     model: &'a str,
-    system: &'a str,
+    system: Vec<SystemBlock<'a>>,
     messages: &'a [crate::message::Message],
     tools: Vec<serde_json::Value>,
     max_tokens: u32,
     stream: bool,
     metadata: ApiMetadata,
+    thinking: ThinkingConfig,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context_management: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output_config: Option<serde_json::Value>,
+}
+
+#[derive(Serialize)]
+struct SystemBlock<'a> {
+    #[serde(rename = "type")]
+    block_type: &'a str,
+    text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_control: Option<CacheControl>,
+}
+
+#[derive(Serialize)]
+struct CacheControl {
+    #[serde(rename = "type")]
+    cache_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scope: Option<String>,
+}
+
+#[derive(Serialize)]
+struct ThinkingConfig {
+    #[serde(rename = "type")]
+    thinking_type: String,
 }
 
 #[derive(Serialize)]
@@ -166,43 +194,78 @@ impl Provider for AnthropicProvider {
             }
         }
 
+        // Build system blocks with billing header prepended.
+        let system = vec![
+            SystemBlock {
+                block_type: "text",
+                text: "x-anthropic-billing-header: cc_version=2.1.92.f1a; cc_entrypoint=sdk-cli; cch=df561;".to_string(),
+                cache_control: None,
+            },
+            SystemBlock {
+                block_type: "text",
+                text: req.system.clone(),
+                cache_control: Some(CacheControl {
+                    cache_type: "ephemeral".to_string(),
+                    scope: Some("global".to_string()),
+                }),
+            },
+        ];
+
         let body = ApiRequest {
             model: &req.model,
-            system: &req.system,
+            system,
             messages: &req.messages,
             tools,
             max_tokens: req.max_tokens,
             metadata: ApiMetadata {
                 user_id: serde_json::json!({
                     "device_id": self.session_id,
+                    "account_uuid": "",
                     "session_id": self.session_id,
                 })
                 .to_string(),
             },
             stream: true,
+            thinking: ThinkingConfig {
+                thinking_type: "adaptive".to_string(),
+            },
+            context_management: Some(serde_json::json!({
+                "edits": [{"type": "clear_thinking_20251015", "keep": "all"}]
+            })),
+            output_config: Some(serde_json::json!({"effort": "medium"})),
         };
 
-        let mut betas = vec![
-            "claude-code-20250219",
+        let mut betas = vec!["claude-code-20250219"];
+        if self.is_oauth {
+            betas.push("oauth-2025-04-20");
+        }
+        betas.extend([
             "interleaved-thinking-2025-05-14",
             "context-management-2025-06-27",
             "prompt-caching-scope-2026-01-05",
             "advanced-tool-use-2025-11-20",
-        ];
-        if self.is_oauth {
-            betas.push("oauth-2025-04-20");
-        }
+            "effort-2025-11-24",
+        ]);
 
         let mut http_req = self
             .client
             .post(&url)
+            .header("Accept", "application/json")
             .header("anthropic-version", "2023-06-01")
             .header("content-type", "application/json")
-            .header("User-Agent", "claude-cli/2.1.92 (external, cli)")
+            .header("User-Agent", "claude-cli/2.1.92 (external, sdk-cli)")
             .header("anthropic-dangerous-direct-browser-access", "true")
             .header("x-app", "cli")
             .header("X-Claude-Code-Session-Id", &self.session_id)
             .header("x-client-request-id", uuid())
+            .header("X-Stainless-Lang", "js")
+            .header("X-Stainless-Runtime", "node")
+            .header("X-Stainless-Runtime-Version", "v24.3.0")
+            .header("X-Stainless-Arch", "arm64")
+            .header("X-Stainless-OS", "Linux")
+            .header("X-Stainless-Package-Version", "0.80.0")
+            .header("X-Stainless-Retry-Count", "0")
+            .header("X-Stainless-Timeout", "600")
             .header("anthropic-beta", betas.join(","));
 
         if self.is_oauth {
