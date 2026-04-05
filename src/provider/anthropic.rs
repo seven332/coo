@@ -5,22 +5,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 use super::{Chunk, Provider, Request, StopReason};
-use crate::message::ContentBlock;
-
-fn uuid() -> String {
-    let mut buf = [0u8; 16];
-    getrandom::fill(&mut buf).expect("failed to generate random bytes");
-    buf[6] = (buf[6] & 0x0f) | 0x40;
-    buf[8] = (buf[8] & 0x3f) | 0x80;
-    format!(
-        "{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
-        u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]),
-        u16::from_be_bytes([buf[4], buf[5]]),
-        u16::from_be_bytes([buf[6], buf[7]]),
-        u16::from_be_bytes([buf[8], buf[9]]),
-        u64::from_be_bytes([0, 0, buf[10], buf[11], buf[12], buf[13], buf[14], buf[15]]),
-    )
-}
+use crate::message::{ContentBlock, new_uuid as uuid};
 
 pub struct AnthropicProvider {
     client: reqwest::Client,
@@ -54,7 +39,8 @@ struct ApiRequest<'a> {
     max_tokens: u32,
     stream: bool,
     metadata: ApiMetadata,
-    thinking: ThinkingConfig,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<ThinkingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     context_management: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -211,6 +197,8 @@ impl Provider for AnthropicProvider {
             },
         ];
 
+        let supports_thinking = !req.model.contains("haiku");
+
         let body = ApiRequest {
             model: &req.model,
             system,
@@ -226,25 +214,41 @@ impl Provider for AnthropicProvider {
                 .to_string(),
             },
             stream: true,
-            thinking: ThinkingConfig {
-                thinking_type: "adaptive".to_string(),
+            thinking: if supports_thinking {
+                Some(ThinkingConfig {
+                    thinking_type: "adaptive".to_string(),
+                })
+            } else {
+                None
             },
-            context_management: Some(serde_json::json!({
-                "edits": [{"type": "clear_thinking_20251015", "keep": "all"}]
-            })),
-            output_config: Some(serde_json::json!({"effort": "medium"})),
+            context_management: if supports_thinking {
+                Some(serde_json::json!({
+                    "edits": [{"type": "clear_thinking_20251015", "keep": "all"}]
+                }))
+            } else {
+                None
+            },
+            output_config: if supports_thinking {
+                Some(serde_json::json!({"effort": "medium"}))
+            } else {
+                None
+            },
         };
 
         let mut betas = vec!["claude-code-20250219"];
         if self.is_oauth {
             betas.push("oauth-2025-04-20");
         }
+        if supports_thinking {
+            betas.extend([
+                "interleaved-thinking-2025-05-14",
+                "context-management-2025-06-27",
+                "effort-2025-11-24",
+            ]);
+        }
         betas.extend([
-            "interleaved-thinking-2025-05-14",
-            "context-management-2025-06-27",
             "prompt-caching-scope-2026-01-05",
             "advanced-tool-use-2025-11-20",
-            "effort-2025-11-24",
         ]);
 
         let mut http_req = self

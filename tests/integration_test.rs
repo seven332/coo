@@ -101,6 +101,64 @@ fn tool_call_response(id: &str, name: &str, input: serde_json::Value) -> FakeRes
     }
 }
 
+fn has_assistant_with_text(events: &[StreamEvent], expected: &str) -> bool {
+    events.iter().any(|e| {
+        if let StreamEvent::Assistant { message, .. } = e {
+            message
+                .content
+                .iter()
+                .any(|c| matches!(c, ContentBlock::Text { text } if text.contains(expected)))
+        } else {
+            false
+        }
+    })
+}
+
+fn has_result(events: &[StreamEvent], expected_subtype: &str) -> bool {
+    events
+        .iter()
+        .any(|e| matches!(e, StreamEvent::Result { subtype, .. } if subtype == expected_subtype))
+}
+
+fn has_user_with_tool_result(events: &[StreamEvent], tool_use_id: &str) -> bool {
+    events.iter().any(|e| {
+        if let StreamEvent::User { message, .. } = e {
+            message.content.iter().any(|c| {
+                matches!(c, ContentBlock::ToolResult { tool_use_id: id, .. } if id == tool_use_id)
+            })
+        } else {
+            false
+        }
+    })
+}
+
+fn get_tool_result_content(events: &[StreamEvent], target_id: &str) -> Option<(String, bool)> {
+    for e in events {
+        if let StreamEvent::User { message, .. } = e {
+            for c in &message.content {
+                if let ContentBlock::ToolResult {
+                    tool_use_id,
+                    content,
+                    is_error,
+                } = c
+                {
+                    if tool_use_id == target_id {
+                        let text = content
+                            .iter()
+                            .map(|tc| match tc {
+                                coo::message::ToolResultContent::Text { text } => text.as_str(),
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        return Some((text, is_error.unwrap_or(false)));
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 // --- Tests ---
 
 /// Full round trip: agent calls bash tool, gets result, then responds.
@@ -113,33 +171,17 @@ async fn bash_tool_round_trip() {
 
     let events = run_agent(provider, "run echo hello world").await;
 
-    let tool_use = events
-        .iter()
-        .find(|e| matches!(e, StreamEvent::ToolUse { name, .. } if name == "bash"));
-    assert!(tool_use.is_some(), "expected ToolUse event");
+    assert!(has_user_with_tool_result(&events, "t1"));
 
-    let tool_result = events.iter().find(
-        |e| matches!(e, StreamEvent::ToolResult { tool_use_id, is_error, .. } if tool_use_id == "t1" && !is_error),
-    );
-    assert!(tool_result.is_some(), "expected successful ToolResult");
-
-    if let Some(StreamEvent::ToolResult { content, .. }) = tool_result {
-        assert!(
-            content.contains("hello world"),
-            "tool result should contain command output, got: {content}"
-        );
-    }
-
+    let (content, is_error) = get_tool_result_content(&events, "t1").unwrap();
+    assert!(!is_error);
     assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, StreamEvent::Text { text } if text.contains("hello world")))
+        content.contains("hello world"),
+        "tool result should contain command output, got: {content}"
     );
-    assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, StreamEvent::Done { reason } if reason == "end_turn"))
-    );
+
+    assert!(has_assistant_with_text(&events, "hello world"));
+    assert!(has_result(&events, "success"));
 }
 
 /// Write a file then read it back in the same agent session.
@@ -161,26 +203,16 @@ async fn write_then_read_round_trip() {
 
     let events = run_agent(provider, "write then read a file").await;
 
-    let write_result = events.iter().find(
-        |e| matches!(e, StreamEvent::ToolResult { tool_use_id, is_error, .. } if tool_use_id == "t1" && !is_error),
-    );
-    assert!(write_result.is_some(), "write should succeed");
+    let (_, write_err) = get_tool_result_content(&events, "t1").unwrap();
+    assert!(!write_err, "write should succeed");
 
-    let read_result = events
-        .iter()
-        .find(|e| matches!(e, StreamEvent::ToolResult { tool_use_id, .. } if tool_use_id == "t2"));
-    assert!(read_result.is_some(), "read should succeed");
-    if let Some(StreamEvent::ToolResult {
-        content, is_error, ..
-    }) = read_result
-    {
-        assert!(!is_error);
-        assert!(
-            content.contains("line1"),
-            "read should return written content"
-        );
-        assert!(content.contains("line3"));
-    }
+    let (read_content, read_err) = get_tool_result_content(&events, "t2").unwrap();
+    assert!(!read_err);
+    assert!(
+        read_content.contains("line1"),
+        "read should return written content"
+    );
+    assert!(read_content.contains("line3"));
 }
 
 /// Multiple tool calls across iterations.
@@ -207,17 +239,12 @@ async fn multi_step_tool_usage() {
 
     let events = run_agent(provider, "create, read, update a file").await;
 
-    let tool_use_count = events
+    // Should have assistant messages for each iteration.
+    let assistant_count = events
         .iter()
-        .filter(|e| matches!(e, StreamEvent::ToolUse { .. }))
+        .filter(|e| matches!(e, StreamEvent::Assistant { .. }))
         .count();
-    assert_eq!(tool_use_count, 3, "should have 3 tool uses");
-
-    let tool_result_count = events
-        .iter()
-        .filter(|e| matches!(e, StreamEvent::ToolResult { .. }))
-        .count();
-    assert_eq!(tool_result_count, 3, "should have 3 tool results");
+    assert_eq!(assistant_count, 4, "should have 4 assistant messages");
 
     let final_content = std::fs::read_to_string(&path).unwrap();
     assert_eq!(final_content, "42");
@@ -237,10 +264,8 @@ async fn tool_error_reported() {
 
     let events = run_agent(provider, "read a nonexistent file").await;
 
-    let error_result = events.iter().find(
-        |e| matches!(e, StreamEvent::ToolResult { tool_use_id, is_error, .. } if tool_use_id == "t1" && *is_error),
-    );
-    assert!(error_result.is_some(), "should report tool error");
+    let (_, is_error) = get_tool_result_content(&events, "t1").unwrap();
+    assert!(is_error, "should report tool error");
 }
 
 /// Unknown tool name is handled gracefully.
@@ -253,14 +278,9 @@ async fn unknown_tool_handled() {
 
     let events = run_agent(provider, "use a fake tool").await;
 
-    let error_result = events.iter().find(
-        |e| matches!(e, StreamEvent::ToolResult { tool_use_id, is_error, .. } if tool_use_id == "t1" && *is_error),
-    );
-    assert!(error_result.is_some(), "unknown tool should return error");
-
-    if let Some(StreamEvent::ToolResult { content, .. }) = error_result {
-        assert!(content.contains("Unknown tool"));
-    }
+    let (content, is_error) = get_tool_result_content(&events, "t1").unwrap();
+    assert!(is_error, "unknown tool should return error");
+    assert!(content.contains("Unknown tool"));
 }
 
 /// Text-only response with no tool calls.
@@ -270,25 +290,18 @@ async fn text_only_no_tools() {
 
     let events = run_agent(provider, "hello").await;
 
-    assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, StreamEvent::Text { text } if text == "Just a simple answer."))
-    );
-    assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, StreamEvent::Done { reason } if reason == "end_turn"))
-    );
+    assert!(has_assistant_with_text(&events, "Just a simple answer."));
+    assert!(has_result(&events, "success"));
 
-    assert!(
-        !events
-            .iter()
-            .any(|e| matches!(e, StreamEvent::ToolUse { .. }))
-    );
-    assert!(
-        !events
-            .iter()
-            .any(|e| matches!(e, StreamEvent::ToolResult { .. }))
-    );
+    // No tool result user messages (only the initial prompt user message).
+    assert!(!events.iter().any(|e| {
+        if let StreamEvent::User { message, .. } = e {
+            message
+                .content
+                .iter()
+                .any(|c| matches!(c, ContentBlock::ToolResult { .. }))
+        } else {
+            false
+        }
+    }));
 }

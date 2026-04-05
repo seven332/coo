@@ -1,5 +1,20 @@
 use serde::{Deserialize, Serialize};
 
+pub fn new_uuid() -> String {
+    let mut buf = [0u8; 16];
+    getrandom::fill(&mut buf).expect("failed to generate random bytes");
+    buf[6] = (buf[6] & 0x0f) | 0x40;
+    buf[8] = (buf[8] & 0x3f) | 0x80;
+    format!(
+        "{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
+        u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]),
+        u16::from_be_bytes([buf[4], buf[5]]),
+        u16::from_be_bytes([buf[6], buf[7]]),
+        u16::from_be_bytes([buf[8], buf[9]]),
+        u64::from_be_bytes([0, 0, buf[10], buf[11], buf[12], buf[13], buf[14], buf[15]]),
+    )
+}
+
 /// A role in the conversation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -175,33 +190,153 @@ mod tests {
         assert_eq!(json["type"], "web_search_tool_result");
         assert_eq!(json["tool_use_id"], "stu_01");
     }
+
+    #[test]
+    fn serialize_stream_event_system() {
+        let event = StreamEvent::System {
+            subtype: "init".into(),
+            data: json!({"tools": ["bash"], "model": "test"}),
+            session_id: "sid".into(),
+            uuid: "uid".into(),
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["type"], "system");
+        assert_eq!(json["subtype"], "init");
+        assert_eq!(json["tools"], json!(["bash"]));
+        assert_eq!(json["session_id"], "sid");
+    }
+
+    #[test]
+    fn serialize_stream_event_assistant() {
+        let event = StreamEvent::Assistant {
+            message: Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Text { text: "hi".into() }],
+            },
+            parent_tool_use_id: json!(null),
+            session_id: "sid".into(),
+            uuid: "uid".into(),
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["type"], "assistant");
+        assert_eq!(json["message"]["role"], "assistant");
+        assert!(json["parent_tool_use_id"].is_null());
+    }
+
+    #[test]
+    fn serialize_stream_event_result() {
+        let event = StreamEvent::Result {
+            subtype: "success".into(),
+            duration_ms: 100,
+            is_error: false,
+            num_turns: 1,
+            result: Some("done".into()),
+            session_id: "sid".into(),
+            uuid: "uid".into(),
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["type"], "result");
+        assert_eq!(json["subtype"], "success");
+        assert_eq!(json["is_error"], false);
+        assert_eq!(json["result"], "done");
+    }
+
+    #[test]
+    fn serialize_stream_event_result_error_skips_none() {
+        let event = StreamEvent::Result {
+            subtype: "error_during_execution".into(),
+            duration_ms: 50,
+            is_error: true,
+            num_turns: 1,
+            result: None,
+            session_id: "sid".into(),
+            uuid: "uid".into(),
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["type"], "result");
+        assert!(json.get("result").is_none());
+    }
+
+    #[test]
+    fn serialize_stream_event_user() {
+        let event = StreamEvent::User {
+            message: Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text {
+                    text: "hello".into(),
+                }],
+            },
+            parent_tool_use_id: json!(null),
+            session_id: "sid".into(),
+            uuid: "uid".into(),
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["type"], "user");
+        assert_eq!(json["message"]["role"], "user");
+        assert_eq!(json["message"]["content"][0]["text"], "hello");
+    }
+
+    #[test]
+    fn serialize_stream_event_raw() {
+        let event = StreamEvent::RawEvent {
+            event: json!({"type": "content_block_delta", "delta": {"type": "text_delta", "text": "hi"}}),
+            parent_tool_use_id: json!(null),
+            session_id: "sid".into(),
+            uuid: "uid".into(),
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["type"], "stream_event");
+        assert_eq!(json["event"]["delta"]["text"], "hi");
+    }
 }
 
-/// Events streamed from the agent loop.
+/// Events streamed from the agent loop (Claude Code stream-json compatible).
 #[derive(Debug, Clone, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type")]
 pub enum StreamEvent {
-    /// Assistant is producing text.
-    Text { text: String },
-    /// Assistant is thinking.
-    Thinking { thinking: String },
-    /// Assistant wants to use a tool.
-    ToolUse {
-        id: String,
-        name: String,
-        input: serde_json::Value,
+    /// Session initialization.
+    #[serde(rename = "system")]
+    System {
+        subtype: String,
+        #[serde(flatten)]
+        data: serde_json::Value,
+        session_id: String,
+        uuid: String,
     },
-    /// A tool has produced a result.
-    ToolResult {
-        tool_use_id: String,
-        content: String,
+    /// Complete assistant message.
+    #[serde(rename = "assistant")]
+    Assistant {
+        message: Message,
+        parent_tool_use_id: serde_json::Value,
+        session_id: String,
+        uuid: String,
+    },
+    /// User message (prompt or tool results).
+    #[serde(rename = "user")]
+    User {
+        message: Message,
+        parent_tool_use_id: serde_json::Value,
+        session_id: String,
+        uuid: String,
+    },
+    /// Raw API stream event for real-time streaming.
+    #[serde(rename = "stream_event")]
+    RawEvent {
+        event: serde_json::Value,
+        parent_tool_use_id: serde_json::Value,
+        session_id: String,
+        uuid: String,
+    },
+    /// Final result.
+    #[serde(rename = "result")]
+    Result {
+        subtype: String,
+        duration_ms: u64,
         is_error: bool,
+        num_turns: usize,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        result: Option<String>,
+        session_id: String,
+        uuid: String,
     },
-    /// The agent loop has finished.
-    Done {
-        /// Why the loop ended: "end_turn", "max_tokens", "error"
-        reason: String,
-    },
-    /// An error occurred.
-    Error { message: String },
 }
