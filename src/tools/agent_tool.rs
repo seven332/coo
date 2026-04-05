@@ -80,10 +80,10 @@ impl Tool for AgentTool {
                 StreamEvent::Assistant { ref message, .. } => {
                     if let Some(content) = message.get("content").and_then(|c| c.as_array()) {
                         for block in content {
-                            if block.get("type").and_then(|t| t.as_str()) == Some("text") {
-                                if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
-                                    output.push_str(text);
-                                }
+                            if block.get("type").and_then(|t| t.as_str()) == Some("text")
+                                && let Some(text) = block.get("text").and_then(|t| t.as_str())
+                            {
+                                output.push_str(text);
                             }
                         }
                     }
