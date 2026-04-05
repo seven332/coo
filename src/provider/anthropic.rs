@@ -392,8 +392,14 @@ impl Provider for AnthropicProvider {
                                     _ => StopReason::EndTurn,
                                 };
                             }
-                            if !usage.is_null() {
-                                meta.usage = usage;
+                            if let Some(obj) = usage.as_object() {
+                                if let Some(base) = meta.usage.as_object_mut() {
+                                    for (k, v) in obj {
+                                        base.insert(k.clone(), v.clone());
+                                    }
+                                } else {
+                                    meta.usage = usage;
+                                }
                             }
                         }
 
