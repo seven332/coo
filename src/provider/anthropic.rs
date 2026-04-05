@@ -7,18 +7,38 @@ use tokio::sync::mpsc;
 use super::{Chunk, Provider, Request, StopReason};
 use crate::message::ContentBlock;
 
+fn uuid() -> String {
+    let mut buf = [0u8; 16];
+    getrandom::fill(&mut buf).expect("failed to generate random bytes");
+    buf[6] = (buf[6] & 0x0f) | 0x40;
+    buf[8] = (buf[8] & 0x3f) | 0x80;
+    format!(
+        "{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
+        u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]),
+        u16::from_be_bytes([buf[4], buf[5]]),
+        u16::from_be_bytes([buf[6], buf[7]]),
+        u16::from_be_bytes([buf[8], buf[9]]),
+        u64::from_be_bytes([0, 0, buf[10], buf[11], buf[12], buf[13], buf[14], buf[15]]),
+    )
+}
+
 pub struct AnthropicProvider {
     client: reqwest::Client,
-    api_key: String,
+    token: String,
+    is_oauth: bool,
     base_url: String,
+    session_id: String,
 }
 
 impl AnthropicProvider {
-    pub fn new(api_key: String, base_url: Option<String>) -> Self {
+    pub fn new(token: String, base_url: Option<String>) -> Self {
+        let is_oauth = token.starts_with("sk-ant-oat");
         Self {
             client: reqwest::Client::new(),
-            api_key,
+            token,
+            is_oauth,
             base_url: base_url.unwrap_or_else(|| "https://api.anthropic.com".to_string()),
+            session_id: uuid(),
         }
     }
 }
@@ -33,6 +53,12 @@ struct ApiRequest<'a> {
     tools: Vec<serde_json::Value>,
     max_tokens: u32,
     stream: bool,
+    metadata: ApiMetadata,
+}
+
+#[derive(Serialize)]
+struct ApiMetadata {
+    user_id: String,
 }
 
 #[derive(Deserialize, Debug)]
@@ -126,7 +152,7 @@ struct BlockAccumulator {
 #[async_trait]
 impl Provider for AnthropicProvider {
     async fn request(&self, req: Request, tx: mpsc::Sender<Chunk>) -> anyhow::Result<()> {
-        let url = format!("{}/v1/messages", self.base_url);
+        let url = format!("{}/v1/messages?beta=true", self.base_url);
 
         // Merge regular tools and server tools into a single JSON array.
         let mut tools: Vec<serde_json::Value> = req
@@ -146,16 +172,46 @@ impl Provider for AnthropicProvider {
             messages: &req.messages,
             tools,
             max_tokens: req.max_tokens,
+            metadata: ApiMetadata {
+                user_id: serde_json::json!({
+                    "device_id": self.session_id,
+                    "session_id": self.session_id,
+                })
+                .to_string(),
+            },
             stream: true,
         };
 
-        let http_req = self
+        let mut betas = vec![
+            "claude-code-20250219",
+            "interleaved-thinking-2025-05-14",
+            "context-management-2025-06-27",
+            "prompt-caching-scope-2026-01-05",
+            "advanced-tool-use-2025-11-20",
+        ];
+        if self.is_oauth {
+            betas.push("oauth-2025-04-20");
+        }
+
+        let mut http_req = self
             .client
             .post(&url)
-            .header("x-api-key", &self.api_key)
             .header("anthropic-version", "2023-06-01")
             .header("content-type", "application/json")
-            .json(&body);
+            .header("User-Agent", "claude-cli/2.1.92 (external, cli)")
+            .header("anthropic-dangerous-direct-browser-access", "true")
+            .header("x-app", "cli")
+            .header("X-Claude-Code-Session-Id", &self.session_id)
+            .header("x-client-request-id", uuid())
+            .header("anthropic-beta", betas.join(","));
+
+        if self.is_oauth {
+            http_req = http_req.header("Authorization", format!("Bearer {}", self.token));
+        } else {
+            http_req = http_req.header("x-api-key", &self.token);
+        }
+
+        let http_req = http_req.json(&body);
 
         let mut es = EventSource::new(http_req).context("Failed to create event source")?;
 
