@@ -289,13 +289,15 @@ impl Tool for AgentTool {
         }
 
         // Look up sub-agent type preset (if specified).
+        // "general-purpose" is the default — treat it the same as omitting subagent_type.
         let agent_type = match &input.subagent_type {
+            Some(name) if name == "general-purpose" => None,
             Some(name) => match super::get_subagent_type(name) {
                 Some(t) => Some(t),
                 None => {
                     let known: Vec<&str> = super::SUBAGENT_TYPES.iter().map(|t| t.name).collect();
                     return ToolResult::error(format!(
-                        "Unknown subagent_type: {name}. Available: {known:?}"
+                        "Unknown subagent_type: {name}. Available: general-purpose, {known:?}"
                     ));
                 }
             },
@@ -1065,6 +1067,26 @@ mod tests {
         assert_eq!(tokens, 0);
         assert_eq!(tool_uses, 0);
         assert!(!had_error);
+    }
+
+    #[tokio::test]
+    async fn general_purpose_subagent_type_accepted() {
+        let provider: Arc<dyn Provider> = Arc::new(EchoProvider);
+        let (mut ctx, _bg_rx) = make_context(provider);
+        ctx.tools = Arc::new(ToolRegistry::with_defaults());
+
+        let tool = AgentTool;
+        let result = tool
+            .call(
+                json!({"prompt": "hello", "subagent_type": "general-purpose"}),
+                &ctx,
+            )
+            .await;
+        assert!(!result.is_error, "general-purpose should be accepted");
+        let text = match &result.content[0] {
+            ToolResultContent::Text { text } => text.as_str(),
+        };
+        assert!(text.contains("hello"));
     }
 
     #[tokio::test]
