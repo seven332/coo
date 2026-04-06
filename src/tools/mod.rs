@@ -17,11 +17,25 @@ pub use web_fetch::WebFetchTool;
 pub use write::WriteTool;
 
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 
 use async_trait::async_trait;
+use tokio::sync::{Mutex, mpsc};
+use tokio::task::JoinHandle;
 
 use crate::message::ToolResult;
 use crate::provider::{Provider, ToolDefinition};
+
+/// Result from a background agent that has completed.
+pub struct BackgroundAgentResult {
+    pub agent_id: String,
+    pub description: String,
+    pub result: String,
+    pub is_error: bool,
+    pub duration_ms: u64,
+    pub total_tokens: u64,
+    pub tool_use_count: usize,
+}
 
 /// Context passed to tools during execution.
 pub struct ToolContext {
@@ -33,6 +47,9 @@ pub struct ToolContext {
     pub max_iterations: usize,
     pub depth: usize,
     pub max_depth: usize,
+    pub background_tx: mpsc::Sender<BackgroundAgentResult>,
+    pub pending_background: Arc<AtomicUsize>,
+    pub background_handles: Arc<Mutex<Vec<JoinHandle<()>>>>,
 }
 
 /// Trait that all tools must implement.
@@ -121,6 +138,7 @@ pub(crate) fn dummy_context() -> ToolContext {
         }
     }
 
+    let (background_tx, _) = mpsc::channel(16);
     ToolContext {
         provider: Arc::new(NoopProvider),
         tools: Arc::new(ToolRegistry::new()),
@@ -130,6 +148,9 @@ pub(crate) fn dummy_context() -> ToolContext {
         max_iterations: 100,
         depth: 0,
         max_depth: 5,
+        background_tx,
+        pending_background: Arc::new(AtomicUsize::new(0)),
+        background_handles: Arc::new(Mutex::new(Vec::new())),
     }
 }
 
