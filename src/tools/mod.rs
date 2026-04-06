@@ -354,6 +354,18 @@ mod tests {
     }
 
     #[test]
+    fn create_tool_by_name_covers_all_defaults() {
+        let reg = ToolRegistry::with_defaults();
+        for def in reg.definitions() {
+            assert!(
+                create_tool_by_name(&def.name).is_some(),
+                "create_tool_by_name missing tool: {}",
+                def.name
+            );
+        }
+    }
+
+    #[test]
     fn get_subagent_type_found() {
         assert!(get_subagent_type("explore").is_some());
         assert!(get_subagent_type("plan").is_some());
