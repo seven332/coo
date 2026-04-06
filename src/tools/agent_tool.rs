@@ -168,6 +168,8 @@ struct Input {
     run_in_background: bool,
     #[serde(default)]
     isolation: Option<String>,
+    #[serde(default)]
+    subagent_type: Option<String>,
 }
 
 /// Collect text output, token usage, tool use count, and error status from agent events.
@@ -258,6 +260,10 @@ impl Tool for AgentTool {
                     "type": "string",
                     "enum": ["worktree"],
                     "description": "Set to 'worktree' to run in an isolated git worktree."
+                },
+                "subagent_type": {
+                    "type": "string",
+                    "description": "Sub-agent type. If omitted, uses 'general-purpose' (all tools, full capability). Options: 'explore' (fast codebase search, no file modifications), 'plan' (architecture research, no file modifications)."
                 }
             },
             "required": ["prompt"]
@@ -282,9 +288,34 @@ impl Tool for AgentTool {
             ));
         }
 
+        // Look up sub-agent type preset (if specified).
+        let agent_type = match &input.subagent_type {
+            Some(name) => match super::get_subagent_type(name) {
+                Some(t) => Some(t),
+                None => {
+                    let known: Vec<&str> = super::SUBAGENT_TYPES.iter().map(|t| t.name).collect();
+                    return ToolResult::error(format!(
+                        "Unknown subagent_type: {name}. Available: {known:?}"
+                    ));
+                }
+            },
+            None => None,
+        };
+
         let description = input.description.unwrap_or_default();
-        let model = input.model.unwrap_or_else(|| context.model.clone());
-        let system = input.system.unwrap_or_else(|| context.system.clone());
+        // subagent_type defaults < explicit input overrides
+        let model = input.model.unwrap_or_else(|| {
+            agent_type
+                .and_then(|t| t.model)
+                .unwrap_or(&context.model)
+                .to_string()
+        });
+        let system = input.system.unwrap_or_else(|| {
+            agent_type
+                .and_then(|t| t.system)
+                .unwrap_or(&context.system)
+                .to_string()
+        });
         let use_worktree = input.isolation.as_deref() == Some("worktree");
 
         // Set up worktree if requested.
@@ -297,12 +328,20 @@ impl Tool for AgentTool {
             None
         };
 
-        let mut agent = Agent::new(
-            context.provider.clone(),
-            context.tools.clone(),
-            model,
-            system,
-        );
+        // Apply tool filtering for sub-agent types with denied_tools.
+        let tools = if let Some(t) = agent_type
+            && !t.denied_tools.is_empty()
+        {
+            Arc::new(
+                context
+                    .tools
+                    .filtered(|name| !t.denied_tools.contains(&name)),
+            )
+        } else {
+            context.tools.clone()
+        };
+
+        let mut agent = Agent::new(context.provider.clone(), tools, model, system);
         agent.max_tokens = context.max_tokens;
         agent.max_iterations = context.max_iterations;
         agent.depth = context.depth + 1;
@@ -310,9 +349,11 @@ impl Tool for AgentTool {
         agent.cwd = worktree.as_ref().map(|wt| wt.path.clone());
 
         let agent_id = agent.session_id.clone();
+        let subagent_type_name = agent_type.map(|t| t.name).unwrap_or("general-purpose");
         info!(
             agent_id,
             description,
+            subagent_type = subagent_type_name,
             run_in_background = input.run_in_background,
             use_worktree,
             "Spawning sub-agent"
@@ -1024,5 +1065,187 @@ mod tests {
         assert_eq!(tokens, 0);
         assert_eq!(tool_uses, 0);
         assert!(!had_error);
+    }
+
+    #[tokio::test]
+    async fn unknown_subagent_type_rejected() {
+        let provider: Arc<dyn Provider> = Arc::new(EchoProvider);
+        let (ctx, _bg_rx) = make_context(provider);
+
+        let tool = AgentTool;
+        let result = tool
+            .call(
+                json!({"prompt": "test", "subagent_type": "nonexistent"}),
+                &ctx,
+            )
+            .await;
+        assert!(result.is_error);
+        let text = match &result.content[0] {
+            ToolResultContent::Text { text } => text.as_str(),
+        };
+        assert!(text.contains("Unknown subagent_type"));
+    }
+
+    #[tokio::test]
+    async fn explore_subagent_inherits_parent_model() {
+        // Provider that echoes the model name.
+        struct ModelEchoProvider;
+
+        #[async_trait]
+        impl Provider for ModelEchoProvider {
+            async fn request(&self, req: Request, tx: mpsc::Sender<Chunk>) -> anyhow::Result<()> {
+                let _ = tx.send(Chunk::Text(req.model.clone())).await;
+                let _ = tx
+                    .send(Chunk::Done {
+                        stop_reason: StopReason::EndTurn,
+                        content: vec![ContentBlock::Text { text: req.model }],
+                    })
+                    .await;
+                Ok(())
+            }
+        }
+
+        let provider: Arc<dyn Provider> = Arc::new(ModelEchoProvider);
+        let (mut ctx, _bg_rx) = make_context(provider);
+        ctx.tools = Arc::new(ToolRegistry::with_defaults());
+
+        let tool = AgentTool;
+        let result = tool
+            .call(
+                json!({"prompt": "search", "subagent_type": "explore"}),
+                &ctx,
+            )
+            .await;
+        assert!(!result.is_error);
+        let text = match &result.content[0] {
+            ToolResultContent::Text { text } => text.as_str(),
+        };
+        // explore inherits parent model ("test" from make_context)
+        assert!(
+            text.contains("test"),
+            "explore should inherit parent model, got: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn explore_subagent_denies_write_tools() {
+        // Provider that tries to call the "write" tool.
+        struct WriteAttemptProvider;
+
+        #[async_trait]
+        impl Provider for WriteAttemptProvider {
+            async fn request(&self, req: Request, tx: mpsc::Sender<Chunk>) -> anyhow::Result<()> {
+                let has_tool_result = req.messages.iter().any(|m| {
+                    m.content
+                        .iter()
+                        .any(|c| matches!(c, ContentBlock::ToolResult { .. }))
+                });
+                if has_tool_result {
+                    // Check if the tool result says "Unknown tool".
+                    let error_text = req
+                        .messages
+                        .iter()
+                        .flat_map(|m| &m.content)
+                        .find_map(|c| {
+                            if let ContentBlock::ToolResult { content, .. } = c {
+                                content.first().map(|tc| match tc {
+                                    crate::message::ToolResultContent::Text { text } => {
+                                        text.clone()
+                                    }
+                                })
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or_default();
+                    let _ = tx.send(Chunk::Text(error_text.clone())).await;
+                    let _ = tx
+                        .send(Chunk::Done {
+                            stop_reason: StopReason::EndTurn,
+                            content: vec![ContentBlock::Text { text: error_text }],
+                        })
+                        .await;
+                } else {
+                    let input = json!({"file_path": "/tmp/test", "content": "bad"});
+                    let _ = tx
+                        .send(Chunk::ToolUse {
+                            id: "t1".into(),
+                            name: "write".into(),
+                            input: input.clone(),
+                        })
+                        .await;
+                    let _ = tx
+                        .send(Chunk::Done {
+                            stop_reason: StopReason::ToolUse,
+                            content: vec![ContentBlock::ToolUse {
+                                id: "t1".into(),
+                                name: "write".into(),
+                                input,
+                            }],
+                        })
+                        .await;
+                }
+                Ok(())
+            }
+        }
+
+        let provider: Arc<dyn Provider> = Arc::new(WriteAttemptProvider);
+        let (mut ctx, _bg_rx) = make_context(provider);
+        ctx.tools = Arc::new(ToolRegistry::with_defaults());
+
+        let tool = AgentTool;
+        let result = tool
+            .call(
+                json!({"prompt": "write a file", "subagent_type": "explore"}),
+                &ctx,
+            )
+            .await;
+        assert!(!result.is_error);
+        let text = match &result.content[0] {
+            ToolResultContent::Text { text } => text.as_str(),
+        };
+        assert!(
+            text.contains("Unknown tool"),
+            "write should be denied for explore, got: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn explicit_model_overrides_subagent_type() {
+        struct ModelEchoProvider;
+
+        #[async_trait]
+        impl Provider for ModelEchoProvider {
+            async fn request(&self, req: Request, tx: mpsc::Sender<Chunk>) -> anyhow::Result<()> {
+                let _ = tx.send(Chunk::Text(req.model.clone())).await;
+                let _ = tx
+                    .send(Chunk::Done {
+                        stop_reason: StopReason::EndTurn,
+                        content: vec![ContentBlock::Text { text: req.model }],
+                    })
+                    .await;
+                Ok(())
+            }
+        }
+
+        let provider: Arc<dyn Provider> = Arc::new(ModelEchoProvider);
+        let (mut ctx, _bg_rx) = make_context(provider);
+        ctx.tools = Arc::new(ToolRegistry::with_defaults());
+
+        let tool = AgentTool;
+        let result = tool
+            .call(
+                json!({"prompt": "test", "subagent_type": "explore", "model": "my-custom-model"}),
+                &ctx,
+            )
+            .await;
+        assert!(!result.is_error);
+        let text = match &result.content[0] {
+            ToolResultContent::Text { text } => text.as_str(),
+        };
+        assert!(
+            text.contains("my-custom-model"),
+            "explicit model should override subagent_type default, got: {text}"
+        );
     }
 }
