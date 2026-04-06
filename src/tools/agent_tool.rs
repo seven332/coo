@@ -228,8 +228,38 @@ impl Tool for AgentTool {
     }
 
     fn description(&self) -> &str {
-        "Spawn a sub-agent to handle a complex task. The sub-agent has access to the same tools \
-         and runs independently. Use this for tasks that benefit from a separate context."
+        "Launch a sub-agent to handle complex, multi-step tasks autonomously.\n\n\
+         Each agent runs in its own context with its own tool access.\n\n\
+         ## Available agent types\n\n\
+         - general-purpose (default): Full tool access. For complex multi-step tasks, \
+         code changes, and work requiring both research and modification. \
+         (Tools: all)\n\
+         - explore: Fast codebase exploration and search. Cannot modify files. \
+         Use for finding files, searching code, and answering questions about the codebase. \
+         (Tools: bash, glob, grep, read, web_fetch)\n\
+         - plan: Software architecture research. Cannot modify files. \
+         Use for designing implementation plans, identifying critical files, \
+         and considering trade-offs. \
+         (Tools: bash, glob, grep, read, web_fetch)\n\n\
+         ## When NOT to use the Agent tool\n\n\
+         - To read a specific file: use read directly\n\
+         - To search for a specific pattern: use grep or glob directly\n\
+         - For simple single-step tasks: use the tool directly\n\n\
+         ## Usage notes\n\n\
+         - Always include a short description (3-5 words) summarizing the task.\n\
+         - Launch multiple agents concurrently when tasks are independent.\n\
+         - Use foreground (default) when you need results before proceeding. \
+         Use background when you have independent work to do in parallel.\n\
+         - The agent result is not visible to the user. Summarize it in your response.\n\
+         - Clearly tell the agent whether to write code or just research.\n\
+         - Set isolation: 'worktree' for agents that modify files in parallel.\n\n\
+         ## Writing the prompt\n\n\
+         Brief the agent like a colleague who just walked in — no prior context.\n\
+         - Explain what you want and why.\n\
+         - Describe what you've already tried or ruled out.\n\
+         - Give enough context for the agent to make judgment calls.\n\
+         - Never delegate understanding: don't write 'based on your findings, fix it'. \
+         Include file paths, line numbers, and what specifically to change."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -238,7 +268,7 @@ impl Tool for AgentTool {
             "properties": {
                 "prompt": {
                     "type": "string",
-                    "description": "The task for the sub-agent to perform"
+                    "description": "The task for the sub-agent to perform. Be specific about what you want, including constraints and context. The agent has no prior conversation history."
                 },
                 "description": {
                     "type": "string",
@@ -246,7 +276,7 @@ impl Tool for AgentTool {
                 },
                 "model": {
                     "type": "string",
-                    "description": "Optional model override (e.g. 'claude-sonnet-4-6', 'claude-haiku-4-5-20251001')"
+                    "description": "Optional model override. If omitted, inherits from the parent agent."
                 },
                 "system": {
                     "type": "string",
@@ -254,16 +284,16 @@ impl Tool for AgentTool {
                 },
                 "run_in_background": {
                     "type": "boolean",
-                    "description": "Set to true to run the agent in the background. Returns immediately with agent ID."
+                    "description": "Run the agent in the background. Returns immediately with agent ID. You will be notified when it completes — do not poll."
                 },
                 "isolation": {
                     "type": "string",
                     "enum": ["worktree"],
-                    "description": "Set to 'worktree' to run in an isolated git worktree."
+                    "description": "Set to 'worktree' to run in an isolated git worktree. The worktree is cleaned up if no changes are made; otherwise the path and branch are returned."
                 },
                 "subagent_type": {
                     "type": "string",
-                    "description": "Sub-agent type. If omitted, uses 'general-purpose' (all tools, full capability). Options: 'explore' (fast codebase search, no file modifications), 'plan' (architecture research, no file modifications)."
+                    "description": "The type of agent to use for this task"
                 }
             },
             "required": ["prompt"]
