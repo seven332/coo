@@ -146,9 +146,7 @@ impl Agent {
     }
 
     /// Clean up worktrees registered by aborted background agents.
-    async fn cleanup_background_worktrees(
-        worktrees: &tokio::sync::Mutex<Vec<WorktreeInfo>>,
-    ) {
+    async fn cleanup_background_worktrees(worktrees: &tokio::sync::Mutex<Vec<WorktreeInfo>>) {
         let worktrees = worktrees.lock().await;
         for wt in worktrees.iter() {
             let _ = tokio::process::Command::new("git")

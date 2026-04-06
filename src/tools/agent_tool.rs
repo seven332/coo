@@ -323,11 +323,15 @@ impl Tool for AgentTool {
             // Register worktree for cleanup in case the bg task is aborted.
             // Double cleanup is harmless (git worktree remove on non-existent is a no-op).
             if let Some(ref wt) = worktree {
-                context.background_worktrees.lock().await.push(WorktreeInfo {
-                    path: wt.path.clone(),
-                    branch: wt.branch.clone(),
-                    git_root: wt.git_root.clone(),
-                });
+                context
+                    .background_worktrees
+                    .lock()
+                    .await
+                    .push(WorktreeInfo {
+                        path: wt.path.clone(),
+                        branch: wt.branch.clone(),
+                        git_root: wt.git_root.clone(),
+                    });
             }
 
             let background_tx = context.background_tx.clone();
