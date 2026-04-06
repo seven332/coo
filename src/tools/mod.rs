@@ -26,6 +26,23 @@ use tokio::task::JoinHandle;
 use crate::message::ToolResult;
 use crate::provider::{Provider, ToolDefinition};
 
+/// Create a git Command with inherited git env vars removed.
+/// Prevents lefthook/pre-commit GIT_DIR, GIT_INDEX_FILE, etc.
+/// from leaking into sub-agent git operations.
+pub(crate) fn git_cmd() -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new("git");
+    for var in [
+        "GIT_DIR",
+        "GIT_INDEX_FILE",
+        "GIT_WORK_TREE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    ] {
+        cmd.env_remove(var);
+    }
+    cmd
+}
+
 /// Result from a background agent that has completed.
 pub struct BackgroundAgentResult {
     pub agent_id: String,
