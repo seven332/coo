@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use serde_json::json;
@@ -7,7 +8,7 @@ use tracing::{info, warn};
 
 use crate::message::{ContentBlock, Message, Role, StreamEvent, new_uuid};
 use crate::provider::{Chunk, Provider, Request, ResponseMeta, ServerTool, StopReason};
-use crate::tools::{ToolContext, ToolRegistry};
+use crate::tools::{BackgroundAgentResult, ToolContext, ToolRegistry};
 
 pub const DEFAULT_MAX_TOKENS: u32 = 32000;
 pub const DEFAULT_MAX_ITERATIONS: usize = 100;
@@ -51,6 +52,97 @@ impl Agent {
         (self.session_id.clone(), new_uuid())
     }
 
+    /// Inject a single background agent result as a user message.
+    async fn inject_background_result(
+        bg: BackgroundAgentResult,
+        messages: &mut Vec<Message>,
+        event_tx: &mpsc::Sender<StreamEvent>,
+        session_id: &str,
+    ) {
+        let status = if bg.is_error { "failed" } else { "completed" };
+        info!(
+            agent_id = bg.agent_id,
+            description = bg.description,
+            status,
+            "Background agent finished"
+        );
+        let notification = format!(
+            "Background agent '{}' (id: {}) {status}:\n{}\n<usage>\ntotal_tokens: {}\ntool_uses: {}\nduration_ms: {}\n</usage>",
+            bg.description,
+            bg.agent_id,
+            bg.result,
+            bg.total_tokens,
+            bg.tool_use_count,
+            bg.duration_ms
+        );
+        let msg = Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: format!(
+                    "<background-agent-notification>\n{notification}\n</background-agent-notification>"
+                ),
+            }],
+        };
+        let _ = event_tx
+            .send(StreamEvent::User {
+                message: msg.clone(),
+                parent_tool_use_id: json!(null),
+                session_id: session_id.to_string(),
+                uuid: new_uuid(),
+            })
+            .await;
+        messages.push(msg);
+    }
+
+    /// Drain completed background agent results (non-blocking).
+    async fn drain_background_agents(
+        background_rx: &mut mpsc::Receiver<BackgroundAgentResult>,
+        messages: &mut Vec<Message>,
+        event_tx: &mpsc::Sender<StreamEvent>,
+        session_id: &str,
+    ) {
+        while let Ok(bg) = background_rx.try_recv() {
+            Self::inject_background_result(bg, messages, event_tx, session_id).await;
+        }
+    }
+
+    /// Block until all pending background agents complete, injecting each result.
+    async fn wait_for_background_agents(
+        background_rx: &mut mpsc::Receiver<BackgroundAgentResult>,
+        pending: &AtomicUsize,
+        messages: &mut Vec<Message>,
+        event_tx: &mpsc::Sender<StreamEvent>,
+        session_id: &str,
+    ) {
+        // Use timeout + recheck instead of snapshotting `pending`, because
+        // drain (try_recv) may have consumed results whose bg tasks haven't
+        // decremented `pending` yet — a snapshot would over-count.
+        loop {
+            if pending.load(Ordering::SeqCst) == 0 {
+                break;
+            }
+            match tokio::time::timeout(std::time::Duration::from_millis(50), background_rx.recv())
+                .await
+            {
+                Ok(Some(bg)) => {
+                    Self::inject_background_result(bg, messages, event_tx, session_id).await;
+                }
+                Ok(None) => break,  // Channel closed.
+                Err(_) => continue, // Timeout — recheck pending.
+            }
+        }
+    }
+
+    /// Abort all background agent tasks.
+    async fn abort_background_agents(
+        handles: &tokio::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    ) {
+        let handles = handles.lock().await;
+        for handle in handles.iter() {
+            handle.abort();
+        }
+    }
+
     /// Run the agent loop. Streams events to `event_tx`.
     /// Takes an initial user prompt and runs until completion.
     pub async fn run(
@@ -79,6 +171,10 @@ impl Agent {
         let mut messages = vec![user_msg];
         let tool_defs = self.tools.definitions();
 
+        let (background_tx, mut background_rx) = mpsc::channel::<BackgroundAgentResult>(16);
+        let pending_background = Arc::new(AtomicUsize::new(0));
+        let background_handles = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+
         let tool_context = ToolContext {
             provider: self.provider.clone(),
             tools: self.tools.clone(),
@@ -88,12 +184,30 @@ impl Agent {
             max_iterations: self.max_iterations,
             depth: self.depth,
             max_depth: self.max_depth,
+            background_tx,
+            pending_background: pending_background.clone(),
+            background_handles: background_handles.clone(),
         };
 
         let mut num_turns = 0;
+        let mut iteration = 0;
 
-        for iteration in 0..self.max_iterations {
+        loop {
+            if iteration >= self.max_iterations {
+                break;
+            }
+
+            // Check for completed background agents and inject results into conversation.
+            Self::drain_background_agents(
+                &mut background_rx,
+                &mut messages,
+                &event_tx,
+                &self.session_id,
+            )
+            .await;
+
             info!(iteration, "Agent loop iteration");
+            iteration += 1;
             num_turns += 1;
 
             // Call LLM.
@@ -199,6 +313,11 @@ impl Agent {
                         uuid: uid,
                     })
                     .await;
+                let orphaned = pending_background.load(Ordering::SeqCst);
+                if orphaned > 0 {
+                    warn!(orphaned, "Provider error — aborting background agents");
+                    Self::abort_background_agents(&background_handles).await;
+                }
                 return Err(e);
             }
 
@@ -247,8 +366,37 @@ impl Agent {
                 .await;
             messages.push(assistant_msg);
 
-            // If no tool use, we're done.
+            // If no tool use, check if we can exit or need to wait for background agents.
             if stop_reason != StopReason::ToolUse || tool_uses.is_empty() {
+                let msg_count_before = messages.len();
+
+                // Wait for pending background agents first (if any).
+                if pending_background.load(Ordering::SeqCst) > 0 {
+                    info!("Waiting for background agents to complete");
+                    Self::wait_for_background_agents(
+                        &mut background_rx,
+                        &pending_background,
+                        &mut messages,
+                        &event_tx,
+                        &self.session_id,
+                    )
+                    .await;
+                }
+
+                // Drain any results sitting in the channel (already-completed agents).
+                Self::drain_background_agents(
+                    &mut background_rx,
+                    &mut messages,
+                    &event_tx,
+                    &self.session_id,
+                )
+                .await;
+
+                if messages.len() > msg_count_before {
+                    // Background results were injected — let the LLM process them.
+                    continue;
+                }
+
                 let result_text = messages
                     .last()
                     .map(|m| {
@@ -316,6 +464,11 @@ impl Agent {
             messages.push(tool_result_msg);
         }
 
+        let orphaned = pending_background.load(Ordering::SeqCst);
+        if orphaned > 0 {
+            warn!(orphaned, "Max iterations — aborting background agents");
+            Self::abort_background_agents(&background_handles).await;
+        }
         warn!("Agent reached max iterations");
         let duration_ms = start.elapsed().as_millis() as u64;
         let (sid, uid) = self.event_meta();
@@ -816,5 +969,343 @@ mod tests {
             "should have 2 tool results in one user message"
         );
         assert!(has_result(&events, "success"));
+    }
+
+    #[tokio::test]
+    async fn background_agent_waited_before_exit() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // Provider that:
+        // 1st call: requests agent tool with run_in_background
+        // 2nd call (after tool result): end_turn (but bg agent still running)
+        // 3rd call (after bg notification): end_turn with "saw background"
+        struct BgTestProvider {
+            call_count: AtomicUsize,
+        }
+
+        #[async_trait]
+        impl Provider for BgTestProvider {
+            async fn request(&self, req: Request, tx: mpsc::Sender<Chunk>) -> anyhow::Result<()> {
+                let n = self.call_count.fetch_add(1, Ordering::SeqCst);
+
+                // Check if messages contain a background notification.
+                let has_bg_notification = req.messages.iter().any(|m| {
+                    m.content.iter().any(|c| match c {
+                        ContentBlock::Text { text } => {
+                            text.contains("background-agent-notification")
+                        }
+                        _ => false,
+                    })
+                });
+
+                if has_bg_notification {
+                    // 3rd call: we got the background notification.
+                    let _ = tx.send(Chunk::Text("saw background result".into())).await;
+                    let _ = tx
+                        .send(Chunk::Done {
+                            stop_reason: StopReason::EndTurn,
+                            content: vec![ContentBlock::Text {
+                                text: "saw background result".into(),
+                            }],
+                        })
+                        .await;
+                } else if n == 0 {
+                    // 1st call: request agent tool with run_in_background.
+                    let input = json!({
+                        "prompt": "background work",
+                        "run_in_background": true,
+                        "description": "bg test"
+                    });
+                    let _ = tx
+                        .send(Chunk::ToolUse {
+                            id: "t1".into(),
+                            name: "agent".into(),
+                            input: input.clone(),
+                        })
+                        .await;
+                    let _ = tx
+                        .send(Chunk::Done {
+                            stop_reason: StopReason::ToolUse,
+                            content: vec![ContentBlock::ToolUse {
+                                id: "t1".into(),
+                                name: "agent".into(),
+                                input,
+                            }],
+                        })
+                        .await;
+                } else {
+                    // 2nd call: end_turn (bg agent may still be running).
+                    let _ = tx.send(Chunk::Text("waiting...".into())).await;
+                    let _ = tx
+                        .send(Chunk::Done {
+                            stop_reason: StopReason::EndTurn,
+                            content: vec![ContentBlock::Text {
+                                text: "waiting...".into(),
+                            }],
+                        })
+                        .await;
+                }
+                Ok(())
+            }
+        }
+
+        let provider = BgTestProvider {
+            call_count: AtomicUsize::new(0),
+        };
+        let agent = make_agent(provider, ToolRegistry::with_defaults());
+
+        let (tx, rx) = mpsc::channel(256);
+        let handle = tokio::spawn(async move { collect_events(rx).await });
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            agent.run("go".into(), tx),
+        )
+        .await
+        .expect("agent should complete within timeout")
+        .unwrap();
+
+        let events = handle.await.unwrap();
+
+        // The agent should have seen the background notification and responded.
+        assert!(
+            has_assistant_with_text(&events, "saw background result"),
+            "agent should process background agent result before exiting"
+        );
+        assert!(has_result(&events, "success"));
+
+        // Should have a user message with the background notification.
+        let has_bg_notification = events.iter().any(|e| {
+            if let StreamEvent::User { message, .. } = e {
+                message.content.iter().any(|c| match c {
+                    ContentBlock::Text { text } => text.contains("background-agent-notification"),
+                    _ => false,
+                })
+            } else {
+                false
+            }
+        });
+        assert!(
+            has_bg_notification,
+            "should have background agent notification in events"
+        );
+    }
+
+    #[tokio::test]
+    async fn multiple_background_agents_all_waited() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // Provider that spawns 2 background agents, then waits for both.
+        struct MultiBgProvider {
+            call_count: AtomicUsize,
+        }
+
+        #[async_trait]
+        impl Provider for MultiBgProvider {
+            async fn request(&self, req: Request, tx: mpsc::Sender<Chunk>) -> anyhow::Result<()> {
+                let n = self.call_count.fetch_add(1, Ordering::SeqCst);
+
+                let bg_notification_count = req
+                    .messages
+                    .iter()
+                    .flat_map(|m| &m.content)
+                    .filter(|c| match c {
+                        ContentBlock::Text { text } => {
+                            text.contains("background-agent-notification")
+                        }
+                        _ => false,
+                    })
+                    .count();
+
+                if bg_notification_count >= 2 {
+                    // Got both notifications.
+                    let _ = tx.send(Chunk::Text("saw both".into())).await;
+                    let _ = tx
+                        .send(Chunk::Done {
+                            stop_reason: StopReason::EndTurn,
+                            content: vec![ContentBlock::Text {
+                                text: "saw both".into(),
+                            }],
+                        })
+                        .await;
+                } else if n == 0 {
+                    // First call: spawn 2 background agents.
+                    for i in 1..=2 {
+                        let input = json!({
+                            "prompt": format!("bg task {i}"),
+                            "run_in_background": true,
+                            "description": format!("bg {i}")
+                        });
+                        let _ = tx
+                            .send(Chunk::ToolUse {
+                                id: format!("t{i}"),
+                                name: "agent".into(),
+                                input: input.clone(),
+                            })
+                            .await;
+                    }
+                    let input1 = json!({"prompt": "bg task 1", "run_in_background": true, "description": "bg 1"});
+                    let input2 = json!({"prompt": "bg task 2", "run_in_background": true, "description": "bg 2"});
+                    let _ = tx
+                        .send(Chunk::Done {
+                            stop_reason: StopReason::ToolUse,
+                            content: vec![
+                                ContentBlock::ToolUse {
+                                    id: "t1".into(),
+                                    name: "agent".into(),
+                                    input: input1,
+                                },
+                                ContentBlock::ToolUse {
+                                    id: "t2".into(),
+                                    name: "agent".into(),
+                                    input: input2,
+                                },
+                            ],
+                        })
+                        .await;
+                } else {
+                    // Waiting for bg agents.
+                    let _ = tx.send(Chunk::Text("waiting".into())).await;
+                    let _ = tx
+                        .send(Chunk::Done {
+                            stop_reason: StopReason::EndTurn,
+                            content: vec![ContentBlock::Text {
+                                text: "waiting".into(),
+                            }],
+                        })
+                        .await;
+                }
+                Ok(())
+            }
+        }
+
+        let provider = MultiBgProvider {
+            call_count: AtomicUsize::new(0),
+        };
+        let agent = make_agent(provider, ToolRegistry::with_defaults());
+
+        let (tx, rx) = mpsc::channel(256);
+        let handle = tokio::spawn(async move { collect_events(rx).await });
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            agent.run("go".into(), tx),
+        )
+        .await
+        .expect("should complete within timeout")
+        .unwrap();
+
+        let events = handle.await.unwrap();
+
+        assert!(
+            has_assistant_with_text(&events, "saw both"),
+            "agent should process both background results"
+        );
+
+        let bg_notification_count = events
+            .iter()
+            .filter(|e| {
+                if let StreamEvent::User { message, .. } = e {
+                    message.content.iter().any(|c| match c {
+                        ContentBlock::Text { text } => {
+                            text.contains("background-agent-notification")
+                        }
+                        _ => false,
+                    })
+                } else {
+                    false
+                }
+            })
+            .count();
+        assert_eq!(
+            bg_notification_count, 2,
+            "should have 2 background notifications"
+        );
+    }
+
+    #[tokio::test]
+    async fn background_agents_aborted_on_max_iterations() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // Provider that spawns a bg agent, then always requests tool use to burn iterations.
+        struct BurnIterProvider {
+            call_count: AtomicUsize,
+        }
+
+        #[async_trait]
+        impl Provider for BurnIterProvider {
+            async fn request(&self, _req: Request, tx: mpsc::Sender<Chunk>) -> anyhow::Result<()> {
+                let n = self.call_count.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    // Spawn bg agent.
+                    let input = json!({
+                        "prompt": "long task",
+                        "run_in_background": true,
+                    });
+                    let _ = tx
+                        .send(Chunk::ToolUse {
+                            id: "t1".into(),
+                            name: "agent".into(),
+                            input: input.clone(),
+                        })
+                        .await;
+                    let _ = tx
+                        .send(Chunk::Done {
+                            stop_reason: StopReason::ToolUse,
+                            content: vec![ContentBlock::ToolUse {
+                                id: "t1".into(),
+                                name: "agent".into(),
+                                input,
+                            }],
+                        })
+                        .await;
+                } else {
+                    // Keep requesting tool use to burn iterations.
+                    let input = json!({"command": "echo burn"});
+                    let _ = tx
+                        .send(Chunk::ToolUse {
+                            id: format!("b{n}"),
+                            name: "bash".into(),
+                            input: input.clone(),
+                        })
+                        .await;
+                    let _ = tx
+                        .send(Chunk::Done {
+                            stop_reason: StopReason::ToolUse,
+                            content: vec![ContentBlock::ToolUse {
+                                id: format!("b{n}"),
+                                name: "bash".into(),
+                                input,
+                            }],
+                        })
+                        .await;
+                }
+                Ok(())
+            }
+        }
+
+        let provider = BurnIterProvider {
+            call_count: AtomicUsize::new(0),
+        };
+        let mut agent = make_agent(provider, ToolRegistry::with_defaults());
+        agent.max_iterations = 3;
+
+        let (tx, rx) = mpsc::channel(512);
+        let handle = tokio::spawn(async move { collect_events(rx).await });
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            agent.run("go".into(), tx),
+        )
+        .await
+        .expect("should complete within timeout")
+        .unwrap();
+
+        let events = handle.await.unwrap();
+
+        assert!(
+            has_result(&events, "error_max_turns"),
+            "should hit max iterations"
+        );
     }
 }
