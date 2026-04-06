@@ -41,22 +41,24 @@ impl Tool for WriteTool {
         })
     }
 
-    async fn call(&self, input: serde_json::Value, _context: &super::ToolContext) -> ToolResult {
+    async fn call(&self, input: serde_json::Value, context: &super::ToolContext) -> ToolResult {
         let input: Input = match serde_json::from_value(input) {
             Ok(v) => v,
             Err(e) => return ToolResult::error(format!("Invalid input: {e}")),
         };
 
+        let path = context.resolve_path(&input.file_path);
+
         // Ensure parent directory exists.
-        if let Some(parent) = std::path::Path::new(&input.file_path).parent()
+        if let Some(parent) = path.parent()
             && let Err(e) = tokio::fs::create_dir_all(parent).await
         {
             return ToolResult::error(format!("Failed to create directory: {e}"));
         }
 
-        match tokio::fs::write(&input.file_path, &input.content).await {
-            Ok(()) => ToolResult::success(format!("Written to {}", input.file_path)),
-            Err(e) => ToolResult::error(format!("Failed to write {}: {e}", input.file_path)),
+        match tokio::fs::write(&path, &input.content).await {
+            Ok(()) => ToolResult::success(format!("Written to {}", path.display())),
+            Err(e) => ToolResult::error(format!("Failed to write {}: {e}", path.display())),
         }
     }
 }
@@ -104,5 +106,25 @@ mod tests {
             .await;
         assert!(!result.is_error);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "nested");
+    }
+
+    #[tokio::test]
+    async fn write_relative_with_cwd() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let tool = WriteTool;
+        let mut ctx = crate::tools::dummy_context();
+        ctx.cwd = Some(dir.path().to_str().unwrap().to_string());
+        let result = tool
+            .call(
+                json!({"file_path": "out.txt", "content": "cwd write"}),
+                &ctx,
+            )
+            .await;
+        assert!(!result.is_error);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("out.txt")).unwrap(),
+            "cwd write"
+        );
     }
 }

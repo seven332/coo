@@ -48,15 +48,16 @@ impl Tool for ReadTool {
         })
     }
 
-    async fn call(&self, input: serde_json::Value, _context: &super::ToolContext) -> ToolResult {
+    async fn call(&self, input: serde_json::Value, context: &super::ToolContext) -> ToolResult {
         let input: Input = match serde_json::from_value(input) {
             Ok(v) => v,
             Err(e) => return ToolResult::error(format!("Invalid input: {e}")),
         };
 
-        let content = match tokio::fs::read_to_string(&input.file_path).await {
+        let path = context.resolve_path(&input.file_path);
+        let content = match tokio::fs::read_to_string(&path).await {
             Ok(c) => c,
-            Err(e) => return ToolResult::error(format!("Failed to read {}: {e}", input.file_path)),
+            Err(e) => return ToolResult::error(format!("Failed to read {}: {e}", path.display())),
         };
 
         let lines: Vec<&str> = content.lines().collect();
@@ -177,5 +178,19 @@ mod tests {
             .call(json!({"file_path": path.to_str().unwrap()}), &ctx)
             .await;
         assert!(result.is_error);
+    }
+
+    #[tokio::test]
+    async fn read_relative_with_cwd() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("hello.txt"), "content here\n").unwrap();
+
+        let tool = ReadTool;
+        let mut ctx = crate::tools::dummy_context();
+        ctx.cwd = Some(dir.path().to_str().unwrap().to_string());
+        let result = tool.call(json!({"file_path": "hello.txt"}), &ctx).await;
+        assert!(!result.is_error);
+        let text = text_of(&result);
+        assert!(text.contains("content here"));
     }
 }

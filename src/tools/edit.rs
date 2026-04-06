@@ -53,7 +53,7 @@ impl Tool for EditTool {
         })
     }
 
-    async fn call(&self, input: serde_json::Value, _context: &super::ToolContext) -> ToolResult {
+    async fn call(&self, input: serde_json::Value, context: &super::ToolContext) -> ToolResult {
         let input: Input = match serde_json::from_value(input) {
             Ok(v) => v,
             Err(e) => return ToolResult::error(format!("Invalid input: {e}")),
@@ -67,21 +67,23 @@ impl Tool for EditTool {
             return ToolResult::error("old_string and new_string must be different");
         }
 
-        let content = match tokio::fs::read_to_string(&input.file_path).await {
+        let path = context.resolve_path(&input.file_path);
+
+        let content = match tokio::fs::read_to_string(&path).await {
             Ok(c) => c,
-            Err(e) => return ToolResult::error(format!("Failed to read {}: {e}", input.file_path)),
+            Err(e) => return ToolResult::error(format!("Failed to read {}: {e}", path.display())),
         };
 
         let count = content.matches(&input.old_string).count();
 
         if count == 0 {
-            return ToolResult::error(format!("old_string not found in {}", input.file_path));
+            return ToolResult::error(format!("old_string not found in {}", path.display()));
         }
 
         if !input.replace_all && count > 1 {
             return ToolResult::error(format!(
                 "old_string has {count} matches in {}. Use replace_all or provide a more unique string.",
-                input.file_path
+                path.display()
             ));
         }
 
@@ -91,13 +93,13 @@ impl Tool for EditTool {
             content.replacen(&input.old_string, &input.new_string, 1)
         };
 
-        match tokio::fs::write(&input.file_path, &new_content).await {
+        match tokio::fs::write(&path, &new_content).await {
             Ok(()) => ToolResult::success(format!(
                 "Replaced {count} occurrence{} in {}",
                 if count > 1 { "s" } else { "" },
-                input.file_path
+                path.display()
             )),
-            Err(e) => ToolResult::error(format!("Failed to write {}: {e}", input.file_path)),
+            Err(e) => ToolResult::error(format!("Failed to write {}: {e}", path.display())),
         }
     }
 }
@@ -285,5 +287,30 @@ mod tests {
             .await;
         assert!(!result.is_error);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "replaced\nline3");
+    }
+
+    #[tokio::test]
+    async fn edit_relative_with_cwd() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("target.txt"), "old content").unwrap();
+
+        let tool = EditTool;
+        let mut ctx = crate::tools::dummy_context();
+        ctx.cwd = Some(dir.path().to_str().unwrap().to_string());
+        let result = tool
+            .call(
+                json!({
+                    "file_path": "target.txt",
+                    "old_string": "old content",
+                    "new_string": "new content"
+                }),
+                &ctx,
+            )
+            .await;
+        assert!(!result.is_error);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("target.txt")).unwrap(),
+            "new content"
+        );
     }
 }

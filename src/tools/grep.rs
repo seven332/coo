@@ -66,13 +66,21 @@ impl Tool for GrepTool {
         })
     }
 
-    async fn call(&self, input: serde_json::Value, _context: &super::ToolContext) -> ToolResult {
+    async fn call(&self, input: serde_json::Value, context: &super::ToolContext) -> ToolResult {
         let input: Input = match serde_json::from_value(input) {
             Ok(v) => v,
             Err(e) => return ToolResult::error(format!("Invalid input: {e}")),
         };
 
-        let search_path = input.path.as_deref().unwrap_or(".");
+        let resolved = input
+            .path
+            .as_deref()
+            .map(|p| context.resolve_path(p))
+            .or_else(|| context.cwd.as_ref().map(std::path::PathBuf::from));
+        let search_path = resolved
+            .as_deref()
+            .unwrap_or(std::path::Path::new("."))
+            .to_string_lossy();
 
         // Try rg first, fall back to grep.
         let has_rg = Command::new("rg")
@@ -82,9 +90,9 @@ impl Tool for GrepTool {
             .is_ok_and(|o| o.status.success());
 
         let output = if has_rg {
-            run_rg(&input, search_path).await
+            run_rg(&input, &search_path).await
         } else {
-            run_grep(&input, search_path).await
+            run_grep(&input, &search_path).await
         };
 
         match output {
@@ -301,5 +309,19 @@ mod tests {
             )
             .await;
         assert!(result.is_error);
+    }
+
+    #[tokio::test]
+    async fn cwd_used_when_no_path() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("file.txt"), "findme here").unwrap();
+
+        let tool = GrepTool;
+        let mut ctx = crate::tools::dummy_context();
+        ctx.cwd = Some(dir.path().to_str().unwrap().to_string());
+        let result = tool.call(json!({"pattern": "findme"}), &ctx).await;
+        assert!(!result.is_error);
+        let text = text_of(&result);
+        assert!(text.contains("findme"));
     }
 }
