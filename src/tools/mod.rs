@@ -154,6 +154,21 @@ impl ToolRegistry {
         self.tools.push(tool);
     }
 
+    /// Create a new registry containing only tools whose names pass the filter.
+    pub fn filtered(&self, allow: impl Fn(&str) -> bool) -> Self {
+        let mut reg = Self::new();
+        for tool_name in self.tools.iter().map(|t| t.name()) {
+            if allow(tool_name) {
+                // Re-create default tools by name. This works because all tools
+                // are stateless singletons (except WebFetchTool which is cheap).
+                if let Some(tool) = create_tool_by_name(tool_name) {
+                    reg.register(tool);
+                }
+            }
+        }
+        reg
+    }
+
     pub fn definitions(&self) -> Vec<ToolDefinition> {
         self.tools.iter().map(|t| t.to_definition()).collect()
     }
@@ -161,6 +176,63 @@ impl ToolRegistry {
     pub fn get(&self, name: &str) -> Option<&dyn Tool> {
         self.tools.iter().find(|t| t.name() == name).map(|t| &**t)
     }
+}
+
+/// Create a tool instance by name. Returns None for unknown names.
+fn create_tool_by_name(name: &str) -> Option<Box<dyn Tool>> {
+    match name {
+        "agent" => Some(Box::new(AgentTool)),
+        "bash" => Some(Box::new(BashTool)),
+        "edit" => Some(Box::new(EditTool)),
+        "glob" => Some(Box::new(GlobTool)),
+        "grep" => Some(Box::new(GrepTool)),
+        "read" => Some(Box::new(ReadTool)),
+        "web_fetch" => Some(Box::new(WebFetchTool::new())),
+        "write" => Some(Box::new(WriteTool)),
+        _ => None,
+    }
+}
+
+/// Built-in sub-agent type definition.
+pub struct SubAgentType {
+    pub name: &'static str,
+    pub description: &'static str,
+    /// Model to use. None means inherit from parent.
+    pub model: Option<&'static str>,
+    /// System prompt override. None means inherit from parent.
+    pub system: Option<&'static str>,
+    /// Tool names to deny. All other tools are allowed.
+    pub denied_tools: &'static [&'static str],
+}
+
+/// Built-in sub-agent types.
+pub static SUBAGENT_TYPES: &[SubAgentType] = &[
+    SubAgentType {
+        name: "explore",
+        description: "Fast agent for codebase exploration and search. Cannot modify files.",
+        model: None,
+        system: Some(
+            "You are a fast codebase exploration agent. Your job is to find files, search code, \
+             and answer questions about the codebase. You cannot modify files. Be concise and direct.",
+        ),
+        denied_tools: &["agent", "edit", "write"],
+    },
+    SubAgentType {
+        name: "plan",
+        description: "Software architect agent for designing implementation plans. Cannot modify files.",
+        model: None,
+        system: Some(
+            "You are a software architect agent. Your job is to research the codebase and design \
+             implementation plans. You cannot modify files. Return step-by-step plans with file \
+             paths and key considerations.",
+        ),
+        denied_tools: &["agent", "edit", "write"],
+    },
+];
+
+/// Look up a built-in sub-agent type by name.
+pub fn get_subagent_type(name: &str) -> Option<&'static SubAgentType> {
+    SUBAGENT_TYPES.iter().find(|t| t.name == name)
 }
 
 /// Create a dummy ToolContext for tests where context is not needed.
@@ -269,5 +341,57 @@ mod tests {
             ctx.resolve_path("/tmp/foo.txt"),
             std::path::PathBuf::from("/tmp/foo.txt")
         );
+    }
+
+    #[test]
+    fn filtered_registry() {
+        let reg = ToolRegistry::with_defaults();
+        let filtered = reg.filtered(|name| name != "write" && name != "edit");
+        assert!(filtered.get("read").is_some());
+        assert!(filtered.get("glob").is_some());
+        assert!(filtered.get("write").is_none());
+        assert!(filtered.get("edit").is_none());
+    }
+
+    #[test]
+    fn create_tool_by_name_covers_all_defaults() {
+        let reg = ToolRegistry::with_defaults();
+        for def in reg.definitions() {
+            assert!(
+                create_tool_by_name(&def.name).is_some(),
+                "create_tool_by_name missing tool: {}",
+                def.name
+            );
+        }
+    }
+
+    #[test]
+    fn get_subagent_type_found() {
+        assert!(get_subagent_type("explore").is_some());
+        assert!(get_subagent_type("plan").is_some());
+    }
+
+    #[test]
+    fn get_subagent_type_not_found() {
+        assert!(get_subagent_type("nonexistent").is_none());
+    }
+
+    #[test]
+    fn explore_type_config() {
+        let t = get_subagent_type("explore").unwrap();
+        assert!(t.denied_tools.contains(&"write"));
+        assert!(t.denied_tools.contains(&"edit"));
+        assert!(t.denied_tools.contains(&"agent"));
+        assert!(!t.denied_tools.contains(&"bash")); // bash allowed
+        assert!(t.model.is_none()); // inherits parent model
+    }
+
+    #[test]
+    fn plan_type_config() {
+        let t = get_subagent_type("plan").unwrap();
+        assert!(t.model.is_none());
+        assert!(t.denied_tools.contains(&"write"));
+        assert!(t.denied_tools.contains(&"edit"));
+        assert!(!t.denied_tools.contains(&"bash")); // bash allowed
     }
 }
