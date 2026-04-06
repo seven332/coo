@@ -8,7 +8,7 @@ use tracing::{info, warn};
 
 use crate::message::{ContentBlock, Message, Role, StreamEvent, new_uuid};
 use crate::provider::{Chunk, Provider, Request, ResponseMeta, ServerTool, StopReason};
-use crate::tools::{BackgroundAgentResult, ToolContext, ToolRegistry};
+use crate::tools::{BackgroundAgentResult, ToolContext, ToolRegistry, WorktreeInfo};
 
 pub const DEFAULT_MAX_TOKENS: u32 = 32000;
 pub const DEFAULT_MAX_ITERATIONS: usize = 100;
@@ -25,6 +25,7 @@ pub struct Agent {
     pub depth: usize,
     pub max_depth: usize,
     pub session_id: String,
+    pub cwd: Option<String>,
 }
 
 impl Agent {
@@ -45,6 +46,7 @@ impl Agent {
             depth: 0,
             max_depth: DEFAULT_MAX_DEPTH,
             session_id: new_uuid(),
+            cwd: None,
         }
     }
 
@@ -143,6 +145,23 @@ impl Agent {
         }
     }
 
+    /// Clean up worktrees registered by aborted background agents.
+    async fn cleanup_background_worktrees(worktrees: &tokio::sync::Mutex<Vec<WorktreeInfo>>) {
+        let worktrees = worktrees.lock().await;
+        for wt in worktrees.iter() {
+            let _ = tokio::process::Command::new("git")
+                .args(["worktree", "remove", "--force", &wt.path])
+                .current_dir(&wt.git_root)
+                .output()
+                .await;
+            let _ = tokio::process::Command::new("git")
+                .args(["branch", "-D", &wt.branch])
+                .current_dir(&wt.git_root)
+                .output()
+                .await;
+        }
+    }
+
     /// Run the agent loop. Streams events to `event_tx`.
     /// Takes an initial user prompt and runs until completion.
     pub async fn run(
@@ -174,6 +193,7 @@ impl Agent {
         let (background_tx, mut background_rx) = mpsc::channel::<BackgroundAgentResult>(16);
         let pending_background = Arc::new(AtomicUsize::new(0));
         let background_handles = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let background_worktrees = Arc::new(tokio::sync::Mutex::new(Vec::<WorktreeInfo>::new()));
 
         let tool_context = ToolContext {
             provider: self.provider.clone(),
@@ -187,6 +207,8 @@ impl Agent {
             background_tx,
             pending_background: pending_background.clone(),
             background_handles: background_handles.clone(),
+            background_worktrees: background_worktrees.clone(),
+            cwd: self.cwd.clone(),
         };
 
         let mut num_turns = 0;
@@ -317,6 +339,7 @@ impl Agent {
                 if orphaned > 0 {
                     warn!(orphaned, "Provider error — aborting background agents");
                     Self::abort_background_agents(&background_handles).await;
+                    Self::cleanup_background_worktrees(&background_worktrees).await;
                 }
                 return Err(e);
             }
@@ -468,6 +491,7 @@ impl Agent {
         if orphaned > 0 {
             warn!(orphaned, "Max iterations — aborting background agents");
             Self::abort_background_agents(&background_handles).await;
+            Self::cleanup_background_worktrees(&background_worktrees).await;
         }
         warn!("Agent reached max iterations");
         let duration_ms = start.elapsed().as_millis() as u64;

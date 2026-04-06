@@ -47,18 +47,19 @@ impl Tool for BashTool {
         })
     }
 
-    async fn call(&self, input: serde_json::Value, _context: &super::ToolContext) -> ToolResult {
+    async fn call(&self, input: serde_json::Value, context: &super::ToolContext) -> ToolResult {
         let input: Input = match serde_json::from_value(input) {
             Ok(v) => v,
             Err(e) => return ToolResult::error(format!("Invalid input: {e}")),
         };
 
         let timeout = std::time::Duration::from_secs(input.timeout);
-        let output_fut = Command::new("bash")
-            .arg("-c")
-            .arg(&input.command)
-            .kill_on_drop(true)
-            .output();
+        let mut cmd = Command::new("bash");
+        cmd.arg("-c").arg(&input.command).kill_on_drop(true);
+        if let Some(ref cwd) = context.cwd {
+            cmd.current_dir(cwd);
+        }
+        let output_fut = cmd.output();
 
         match tokio::time::timeout(timeout, output_fut).await {
             Ok(Ok(output)) => {
@@ -158,5 +159,20 @@ mod tests {
             crate::message::ToolResultContent::Text { text } => text.as_str(),
         };
         assert_eq!(text, "(no output)");
+    }
+
+    #[tokio::test]
+    async fn cwd_respected() {
+        let dir = tempfile::tempdir().unwrap();
+        let canonical = dir.path().canonicalize().unwrap();
+        let tool = BashTool;
+        let mut ctx = crate::tools::dummy_context();
+        ctx.cwd = Some(canonical.to_str().unwrap().to_string());
+        let result = tool.call(json!({"command": "pwd"}), &ctx).await;
+        assert!(!result.is_error);
+        let text = match &result.content[0] {
+            crate::message::ToolResultContent::Text { text } => text.as_str(),
+        };
+        assert_eq!(text.trim(), canonical.to_str().unwrap());
     }
 }

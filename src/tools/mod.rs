@@ -37,6 +37,13 @@ pub struct BackgroundAgentResult {
     pub tool_use_count: usize,
 }
 
+/// Info needed to clean up an orphaned worktree.
+pub struct WorktreeInfo {
+    pub path: String,
+    pub branch: String,
+    pub git_root: String,
+}
+
 /// Context passed to tools during execution.
 pub struct ToolContext {
     pub provider: Arc<dyn Provider>,
@@ -50,6 +57,25 @@ pub struct ToolContext {
     pub background_tx: mpsc::Sender<BackgroundAgentResult>,
     pub pending_background: Arc<AtomicUsize>,
     pub background_handles: Arc<Mutex<Vec<JoinHandle<()>>>>,
+    /// Worktrees created by background agents, for cleanup on abort.
+    pub background_worktrees: Arc<Mutex<Vec<WorktreeInfo>>>,
+    /// Working directory for tool execution. If None, uses process CWD.
+    pub cwd: Option<String>,
+}
+
+impl ToolContext {
+    /// Resolve a file path relative to the tool context's working directory.
+    /// Absolute paths are returned as-is; relative paths are resolved against `cwd`.
+    pub fn resolve_path(&self, path: &str) -> std::path::PathBuf {
+        let p = std::path::Path::new(path);
+        if p.is_absolute() {
+            p.to_path_buf()
+        } else if let Some(ref cwd) = self.cwd {
+            std::path::Path::new(cwd).join(p)
+        } else {
+            p.to_path_buf()
+        }
+    }
 }
 
 /// Trait that all tools must implement.
@@ -151,6 +177,8 @@ pub(crate) fn dummy_context() -> ToolContext {
         background_tx,
         pending_background: Arc::new(AtomicUsize::new(0)),
         background_handles: Arc::new(Mutex::new(Vec::new())),
+        background_worktrees: Arc::new(Mutex::new(Vec::new())),
+        cwd: None,
     }
 }
 
@@ -186,5 +214,43 @@ mod tests {
         assert!(names.contains(&"read"));
         assert!(names.contains(&"web_fetch"));
         assert!(names.contains(&"write"));
+    }
+
+    #[test]
+    fn resolve_path_absolute() {
+        let ctx = dummy_context();
+        assert_eq!(
+            ctx.resolve_path("/tmp/foo.txt"),
+            std::path::PathBuf::from("/tmp/foo.txt")
+        );
+    }
+
+    #[test]
+    fn resolve_path_relative_no_cwd() {
+        let ctx = dummy_context();
+        assert_eq!(
+            ctx.resolve_path("foo.txt"),
+            std::path::PathBuf::from("foo.txt")
+        );
+    }
+
+    #[test]
+    fn resolve_path_relative_with_cwd() {
+        let mut ctx = dummy_context();
+        ctx.cwd = Some("/work/dir".into());
+        assert_eq!(
+            ctx.resolve_path("foo.txt"),
+            std::path::PathBuf::from("/work/dir/foo.txt")
+        );
+    }
+
+    #[test]
+    fn resolve_path_absolute_ignores_cwd() {
+        let mut ctx = dummy_context();
+        ctx.cwd = Some("/work/dir".into());
+        assert_eq!(
+            ctx.resolve_path("/tmp/foo.txt"),
+            std::path::PathBuf::from("/tmp/foo.txt")
+        );
     }
 }

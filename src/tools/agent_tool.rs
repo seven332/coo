@@ -1,16 +1,18 @@
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
+use tokio::process::Command;
 use tokio::sync::mpsc;
 use tracing::info;
 
 use crate::agent::Agent;
 use crate::message::{StreamEvent, ToolResult};
 
-use super::{BackgroundAgentResult, Tool, ToolContext};
+use super::{BackgroundAgentResult, Tool, ToolContext, WorktreeInfo};
 
 pub struct AgentTool;
 
@@ -21,6 +23,136 @@ struct AbortOnDrop(tokio::task::AbortHandle);
 impl Drop for AbortOnDrop {
     fn drop(&mut self) {
         self.0.abort();
+    }
+}
+
+/// Decrements an atomic counter on drop, ensuring the count is accurate
+/// even if the owning task panics before reaching the explicit decrement.
+struct PendingGuard(Arc<std::sync::atomic::AtomicUsize>);
+
+impl Drop for PendingGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Worktree state for cleanup after sub-agent completes.
+struct Worktree {
+    path: String,
+    branch: String,
+    start_commit: String,
+    git_root: String,
+}
+
+impl Worktree {
+    /// Create a git worktree. `cwd` is the directory to run git commands from
+    /// (used to find the git repo). If None, uses the process CWD.
+    async fn create(cwd: Option<&str>) -> Result<Self, String> {
+        let id = crate::message::new_uuid();
+        let short_id = &id[..8];
+        let branch = format!("worktree-{short_id}");
+
+        // Find git root.
+        let mut cmd = Command::new("git");
+        cmd.args(["rev-parse", "--show-toplevel"]);
+        if let Some(dir) = cwd {
+            cmd.current_dir(dir);
+        }
+        let output = cmd
+            .output()
+            .await
+            .map_err(|e| format!("Failed to find git root: {e}"))?;
+        if !output.status.success() {
+            return Err("Not in a git repository".into());
+        }
+        let git_root = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let worktree_path = format!("{git_root}/.coo/worktrees/{short_id}");
+
+        // Create worktree from HEAD.
+        let mut cmd = Command::new("git");
+        cmd.args(["worktree", "add", &worktree_path, "-b", &branch, "HEAD"]);
+        if let Some(dir) = cwd {
+            cmd.current_dir(dir);
+        }
+        let output = cmd
+            .output()
+            .await
+            .map_err(|e| format!("Failed to create worktree: {e}"))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("git worktree add failed: {stderr}"));
+        }
+
+        // Record starting commit from the worktree itself (not the main repo),
+        // to avoid a race where HEAD advances between rev-parse and worktree add.
+        let start_commit = match Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&worktree_path)
+            .output()
+            .await
+        {
+            Ok(output) => String::from_utf8_lossy(&output.stdout).trim().to_string(),
+            Err(e) => {
+                // Worktree was created but we can't read HEAD — clean up.
+                let _ = Command::new("git")
+                    .args(["worktree", "remove", "--force", &worktree_path])
+                    .current_dir(&git_root)
+                    .output()
+                    .await;
+                let _ = Command::new("git")
+                    .args(["branch", "-D", &branch])
+                    .current_dir(&git_root)
+                    .output()
+                    .await;
+                return Err(format!("Failed to get worktree HEAD: {e}"));
+            }
+        };
+
+        Ok(Self {
+            path: worktree_path,
+            branch,
+            start_commit,
+            git_root,
+        })
+    }
+
+    /// Check if the worktree has uncommitted changes or new commits.
+    async fn has_changes(&self) -> bool {
+        // Check uncommitted changes.
+        let has_uncommitted = Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(&self.path)
+            .output()
+            .await
+            .is_ok_and(|o| !o.stdout.is_empty());
+        if has_uncommitted {
+            return true;
+        }
+
+        // Check if HEAD advanced beyond the starting commit.
+        Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&self.path)
+            .output()
+            .await
+            .is_ok_and(|o| {
+                let current = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                current != self.start_commit
+            })
+    }
+
+    /// Remove the worktree and delete the branch.
+    async fn cleanup(&self) {
+        let _ = Command::new("git")
+            .args(["worktree", "remove", "--force", &self.path])
+            .current_dir(&self.git_root)
+            .output()
+            .await;
+        let _ = Command::new("git")
+            .args(["branch", "-D", &self.branch])
+            .current_dir(&self.git_root)
+            .output()
+            .await;
     }
 }
 
@@ -35,6 +167,8 @@ struct Input {
     system: Option<String>,
     #[serde(default)]
     run_in_background: bool,
+    #[serde(default)]
+    isolation: Option<String>,
 }
 
 /// Collect text output, token usage, tool use count, and error status from agent events.
@@ -120,6 +254,11 @@ impl Tool for AgentTool {
                 "run_in_background": {
                     "type": "boolean",
                     "description": "Set to true to run the agent in the background. Returns immediately with agent ID."
+                },
+                "isolation": {
+                    "type": "string",
+                    "enum": ["worktree"],
+                    "description": "Set to 'worktree' to run in an isolated git worktree."
                 }
             },
             "required": ["prompt"]
@@ -136,9 +275,28 @@ impl Tool for AgentTool {
             return ToolResult::error(format!("Max agent depth {} reached", context.max_depth));
         }
 
+        if let Some(ref iso) = input.isolation
+            && iso != "worktree"
+        {
+            return ToolResult::error(format!(
+                "Unknown isolation mode: {iso}. Supported: 'worktree'"
+            ));
+        }
+
         let description = input.description.unwrap_or_default();
         let model = input.model.unwrap_or_else(|| context.model.clone());
         let system = input.system.unwrap_or_else(|| context.system.clone());
+        let use_worktree = input.isolation.as_deref() == Some("worktree");
+
+        // Set up worktree if requested.
+        let worktree = if use_worktree {
+            match Worktree::create(context.cwd.as_deref()).await {
+                Ok(wt) => Some(wt),
+                Err(e) => return ToolResult::error(format!("Failed to create worktree: {e}")),
+            }
+        } else {
+            None
+        };
 
         let mut agent = Agent::new(
             context.provider.clone(),
@@ -150,25 +308,48 @@ impl Tool for AgentTool {
         agent.max_iterations = context.max_iterations;
         agent.depth = context.depth + 1;
         agent.max_depth = context.max_depth;
+        agent.cwd = worktree.as_ref().map(|wt| wt.path.clone());
 
         let agent_id = agent.session_id.clone();
         info!(
             agent_id,
             description,
             run_in_background = input.run_in_background,
+            use_worktree,
             "Spawning sub-agent"
         );
 
         if input.run_in_background {
+            // Register worktree for cleanup in case the bg task is aborted.
+            // Double cleanup is harmless (git worktree remove on non-existent is a no-op).
+            if let Some(ref wt) = worktree {
+                context
+                    .background_worktrees
+                    .lock()
+                    .await
+                    .push(WorktreeInfo {
+                        path: wt.path.clone(),
+                        branch: wt.branch.clone(),
+                        git_root: wt.git_root.clone(),
+                    });
+            }
+
             let background_tx = context.background_tx.clone();
             let pending = context.pending_background.clone();
+            let bg_worktrees = context.background_worktrees.clone();
             let bg_agent_id = agent_id.clone();
             let bg_description = description.clone();
             let prompt = input.prompt;
+            let wt_path_for_removal = worktree.as_ref().map(|wt| wt.path.clone());
 
             pending.fetch_add(1, Ordering::SeqCst);
 
             let bg_handle = tokio::spawn(async move {
+                // Guard ensures pending is decremented even on panic/abort.
+                // Dropped after send, so the parent's wait loop sees pending > 0
+                // until the result is in the channel and ready to be received.
+                let _pending_guard = PendingGuard(pending);
+
                 let (event_tx, mut event_rx) = mpsc::channel::<StreamEvent>(128);
                 let start = Instant::now();
 
@@ -181,7 +362,7 @@ impl Tool for AgentTool {
 
                 let duration_ms = start.elapsed().as_millis() as u64;
 
-                let (result, is_error) = match handle.await {
+                let (mut result, is_error) = match handle.await {
                     Ok(Ok(())) if !had_error => {
                         let text = if output.is_empty() {
                             "(sub-agent produced no text output)".to_string()
@@ -195,6 +376,25 @@ impl Tool for AgentTool {
                     Err(e) => (format!("Sub-agent panicked: {e}"), true),
                 };
 
+                // Handle worktree cleanup.
+                if let Some(wt) = worktree {
+                    if is_error || !wt.has_changes().await {
+                        wt.cleanup().await;
+                    } else {
+                        result.push_str(&format!(
+                            "\nworktree_path: {}\nworktree_branch: {}",
+                            wt.path, wt.branch
+                        ));
+                    }
+                }
+
+                // Remove from background_worktrees now that the task has handled cleanup.
+                // This prevents the parent's abort path from cleaning up worktrees that
+                // were intentionally kept (has changes) by a completed agent.
+                if let Some(ref path) = wt_path_for_removal {
+                    bg_worktrees.lock().await.retain(|w| w.path != *path);
+                }
+
                 let _ = background_tx
                     .send(BackgroundAgentResult {
                         agent_id: bg_agent_id,
@@ -207,9 +407,7 @@ impl Tool for AgentTool {
                     })
                     .await;
 
-                // Decrement after send so the parent's wait loop sees pending > 0
-                // until the result is in the channel and ready to be received.
-                pending.fetch_sub(1, Ordering::SeqCst);
+                // Drop _pending_guard here (end of block) to decrement after send.
             });
 
             context.background_handles.lock().await.push(bg_handle);
@@ -233,23 +431,56 @@ impl Tool for AgentTool {
 
             if had_error {
                 handle.abort();
+                if let Some(wt) = &worktree {
+                    wt.cleanup().await;
+                }
                 return ToolResult::error(format!("Sub-agent error: {output}"));
             }
 
-            match handle.await {
+            let agent_result = match handle.await {
                 Ok(Ok(())) => {
                     let text = if output.is_empty() {
                         "(sub-agent produced no text output)".to_string()
                     } else {
                         output
                     };
+                    Ok(text)
+                }
+                Ok(Err(e)) => Err(format!("Sub-agent failed: {e}")),
+                Err(e) => Err(format!("Sub-agent panicked: {e}")),
+            };
+
+            // Handle worktree cleanup.
+            let worktree_info = if let Some(wt) = &worktree {
+                let has_changes = wt.has_changes().await;
+                if has_changes {
+                    let info = format!(
+                        "\nworktree_path: {}\nworktree_branch: {}",
+                        wt.path, wt.branch
+                    );
+                    Some(info)
+                } else {
+                    wt.cleanup().await;
+                    None
+                }
+            } else {
+                None
+            };
+
+            match agent_result {
+                Ok(text) => {
+                    let wt_info = worktree_info.unwrap_or_default();
                     let result = format!(
-                        "{text}\nagentId: {agent_id} (use SendMessage with to: '{agent_id}' to continue this agent)\n<usage>\ntotal_tokens: {total_tokens}\ntool_uses: {tool_use_count}\nduration_ms: {duration_ms}\n</usage>"
+                        "{text}\nagentId: {agent_id} (use SendMessage with to: '{agent_id}' to continue this agent)\n<usage>\ntotal_tokens: {total_tokens}\ntool_uses: {tool_use_count}\nduration_ms: {duration_ms}\n</usage>{wt_info}"
                     );
                     ToolResult::success(result)
                 }
-                Ok(Err(e)) => ToolResult::error(format!("Sub-agent failed: {e}")),
-                Err(e) => ToolResult::error(format!("Sub-agent panicked: {e}")),
+                Err(e) => {
+                    if let Some(wt) = &worktree {
+                        wt.cleanup().await;
+                    }
+                    ToolResult::error(e)
+                }
             }
         }
     }
@@ -306,6 +537,8 @@ mod tests {
             background_tx,
             pending_background: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             background_handles: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            background_worktrees: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            cwd: None,
         };
         (ctx, background_rx)
     }
@@ -585,5 +818,212 @@ mod tests {
             ToolResultContent::Text { text } => text.as_str(),
         };
         assert!(text.contains("Max agent depth"));
+    }
+
+    #[tokio::test]
+    async fn invalid_isolation_rejected() {
+        let provider: Arc<dyn Provider> = Arc::new(EchoProvider);
+        let (ctx, _bg_rx) = make_context(provider);
+
+        let tool = AgentTool;
+        let result = tool
+            .call(json!({"prompt": "test", "isolation": "docker"}), &ctx)
+            .await;
+        assert!(result.is_error);
+        let text = match &result.content[0] {
+            ToolResultContent::Text { text } => text.as_str(),
+        };
+        assert!(text.contains("Unknown isolation mode"));
+    }
+
+    #[tokio::test]
+    async fn worktree_lifecycle() {
+        // Set up a temp git repo.
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = dir.path().to_str().unwrap();
+        let run = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir_path)
+                .output()
+        };
+        run(&["init"]).unwrap();
+        run(&["config", "user.email", "test@test.com"]).unwrap();
+        run(&["config", "user.name", "Test"]).unwrap();
+        std::fs::write(dir.path().join("file.txt"), "hello").unwrap();
+        run(&["add", "."]).unwrap();
+        run(&["commit", "-m", "init"]).unwrap();
+
+        // Create worktree, passing the repo path explicitly.
+        let wt = Worktree::create(Some(dir_path))
+            .await
+            .expect("should create worktree");
+        assert!(std::path::Path::new(&wt.path).exists());
+        assert!(!wt.start_commit.is_empty());
+
+        // No changes yet — has_changes should be false.
+        assert!(!wt.has_changes().await);
+
+        // Write a file in the worktree.
+        std::fs::write(
+            std::path::Path::new(&wt.path).join("new.txt"),
+            "worktree change",
+        )
+        .unwrap();
+        assert!(wt.has_changes().await);
+
+        // Cleanup.
+        let path = wt.path.clone();
+        wt.cleanup().await;
+        assert!(!std::path::Path::new(&path).exists());
+    }
+
+    #[tokio::test]
+    async fn worktree_detects_committed_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = dir.path().to_str().unwrap();
+        let run = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir_path)
+                .output()
+        };
+        run(&["init"]).unwrap();
+        run(&["config", "user.email", "test@test.com"]).unwrap();
+        run(&["config", "user.name", "Test"]).unwrap();
+        std::fs::write(dir.path().join("file.txt"), "hello").unwrap();
+        run(&["add", "."]).unwrap();
+        run(&["commit", "-m", "init"]).unwrap();
+
+        let wt = Worktree::create(Some(dir_path))
+            .await
+            .expect("should create worktree");
+
+        // Commit a change inside the worktree.
+        std::fs::write(std::path::Path::new(&wt.path).join("committed.txt"), "data").unwrap();
+        let wt_path = wt.path.clone();
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(&wt_path)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "-m", "wt commit"])
+            .current_dir(&wt_path)
+            .output()
+            .unwrap();
+
+        // git status is clean, but HEAD advanced — has_changes should be true.
+        assert!(wt.has_changes().await);
+
+        wt.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn worktree_create_not_in_git_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        // dir is a plain directory, not a git repo.
+        let result = Worktree::create(Some(dir.path().to_str().unwrap())).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn worktree_cleanup_removes_branch() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = dir.path().to_str().unwrap();
+        let run = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir_path)
+                .output()
+        };
+        run(&["init"]).unwrap();
+        run(&["config", "user.email", "test@test.com"]).unwrap();
+        run(&["config", "user.name", "Test"]).unwrap();
+        std::fs::write(dir.path().join("file.txt"), "hello").unwrap();
+        run(&["add", "."]).unwrap();
+        run(&["commit", "-m", "init"]).unwrap();
+
+        let wt = Worktree::create(Some(dir_path))
+            .await
+            .expect("should create worktree");
+        let branch = wt.branch.clone();
+
+        wt.cleanup().await;
+
+        // Verify branch no longer exists.
+        let output = run(&["branch", "--list", &branch]).unwrap();
+        let branches = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            !branches.contains(&branch),
+            "branch {branch} should be deleted after cleanup"
+        );
+    }
+
+    #[tokio::test]
+    async fn worktree_path_under_coo_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = dir.path().to_str().unwrap();
+        let run = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir_path)
+                .output()
+        };
+        run(&["init"]).unwrap();
+        run(&["config", "user.email", "test@test.com"]).unwrap();
+        run(&["config", "user.name", "Test"]).unwrap();
+        std::fs::write(dir.path().join("file.txt"), "hello").unwrap();
+        run(&["add", "."]).unwrap();
+        run(&["commit", "-m", "init"]).unwrap();
+
+        let wt = Worktree::create(Some(dir_path))
+            .await
+            .expect("should create worktree");
+
+        assert!(
+            wt.path.contains(".coo/worktrees/"),
+            "worktree path should be under .coo/worktrees/, got: {}",
+            wt.path
+        );
+
+        wt.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn pending_guard_decrements_on_drop() {
+        let counter = Arc::new(std::sync::atomic::AtomicUsize::new(1));
+        {
+            let _guard = PendingGuard(counter.clone());
+            assert_eq!(counter.load(Ordering::SeqCst), 1);
+        }
+        assert_eq!(counter.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn pending_guard_decrements_on_panic() {
+        let counter = Arc::new(std::sync::atomic::AtomicUsize::new(1));
+        let c = counter.clone();
+        let handle = tokio::spawn(async move {
+            let _guard = PendingGuard(c);
+            panic!("intentional panic");
+        });
+        let _ = handle.await; // JoinError::Panic
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            0,
+            "pending should be 0 after panic"
+        );
+    }
+
+    #[tokio::test]
+    async fn collect_agent_output_empty_channel() {
+        let (tx, mut rx) = mpsc::channel::<StreamEvent>(1);
+        drop(tx); // Close immediately.
+        let (output, tokens, tool_uses, had_error) = collect_agent_output(&mut rx).await;
+        assert!(output.is_empty());
+        assert_eq!(tokens, 0);
+        assert_eq!(tool_uses, 0);
+        assert!(!had_error);
     }
 }

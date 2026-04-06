@@ -42,14 +42,20 @@ impl Tool for GlobTool {
         })
     }
 
-    async fn call(&self, input: serde_json::Value, _context: &super::ToolContext) -> ToolResult {
+    async fn call(&self, input: serde_json::Value, context: &super::ToolContext) -> ToolResult {
         let input: Input = match serde_json::from_value(input) {
             Ok(v) => v,
             Err(e) => return ToolResult::error(format!("Invalid input: {e}")),
         };
 
-        let full_pattern = match &input.path {
+        let base = input
+            .path
+            .map(|p| context.resolve_path(&p))
+            .or_else(|| context.cwd.as_ref().map(std::path::PathBuf::from));
+
+        let full_pattern = match &base {
             Some(p) => {
+                let p = p.to_string_lossy();
                 let p = p.trim_end_matches('/');
                 format!("{p}/{}", input.pattern)
             }
@@ -169,5 +175,21 @@ mod tests {
             .await;
         assert!(!result.is_error);
         assert!(text_of(&result).contains("No matches"));
+    }
+
+    #[tokio::test]
+    async fn cwd_used_when_no_path() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.rs"), "").unwrap();
+        fs::write(dir.path().join("b.txt"), "").unwrap();
+
+        let tool = GlobTool;
+        let mut ctx = crate::tools::dummy_context();
+        ctx.cwd = Some(dir.path().to_str().unwrap().to_string());
+        let result = tool.call(json!({"pattern": "*.rs"}), &ctx).await;
+        assert!(!result.is_error);
+        let text = text_of(&result);
+        assert!(text.contains("a.rs"));
+        assert!(!text.contains("b.txt"));
     }
 }
