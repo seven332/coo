@@ -5,14 +5,13 @@ use std::time::Instant;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
-use tokio::process::Command;
 use tokio::sync::mpsc;
 use tracing::info;
 
 use crate::agent::Agent;
 use crate::message::{StreamEvent, ToolResult};
 
-use super::{BackgroundAgentResult, Tool, ToolContext, WorktreeInfo};
+use super::{BackgroundAgentResult, Tool, ToolContext, WorktreeInfo, git_cmd};
 
 pub struct AgentTool;
 
@@ -53,7 +52,7 @@ impl Worktree {
         let branch = format!("worktree-{short_id}");
 
         // Find git root.
-        let mut cmd = Command::new("git");
+        let mut cmd = git_cmd();
         cmd.args(["rev-parse", "--show-toplevel"]);
         if let Some(dir) = cwd {
             cmd.current_dir(dir);
@@ -69,7 +68,7 @@ impl Worktree {
         let worktree_path = format!("{git_root}/.coo/worktrees/{short_id}");
 
         // Create worktree from HEAD.
-        let mut cmd = Command::new("git");
+        let mut cmd = git_cmd();
         cmd.args(["worktree", "add", &worktree_path, "-b", &branch, "HEAD"]);
         if let Some(dir) = cwd {
             cmd.current_dir(dir);
@@ -85,7 +84,7 @@ impl Worktree {
 
         // Record starting commit from the worktree itself (not the main repo),
         // to avoid a race where HEAD advances between rev-parse and worktree add.
-        let start_commit = match Command::new("git")
+        let start_commit = match git_cmd()
             .args(["rev-parse", "HEAD"])
             .current_dir(&worktree_path)
             .output()
@@ -94,12 +93,12 @@ impl Worktree {
             Ok(output) => String::from_utf8_lossy(&output.stdout).trim().to_string(),
             Err(e) => {
                 // Worktree was created but we can't read HEAD — clean up.
-                let _ = Command::new("git")
+                let _ = git_cmd()
                     .args(["worktree", "remove", "--force", &worktree_path])
                     .current_dir(&git_root)
                     .output()
                     .await;
-                let _ = Command::new("git")
+                let _ = git_cmd()
                     .args(["branch", "-D", &branch])
                     .current_dir(&git_root)
                     .output()
@@ -119,7 +118,7 @@ impl Worktree {
     /// Check if the worktree has uncommitted changes or new commits.
     async fn has_changes(&self) -> bool {
         // Check uncommitted changes.
-        let has_uncommitted = Command::new("git")
+        let has_uncommitted = git_cmd()
             .args(["status", "--porcelain"])
             .current_dir(&self.path)
             .output()
@@ -130,7 +129,7 @@ impl Worktree {
         }
 
         // Check if HEAD advanced beyond the starting commit.
-        Command::new("git")
+        git_cmd()
             .args(["rev-parse", "HEAD"])
             .current_dir(&self.path)
             .output()
@@ -143,12 +142,12 @@ impl Worktree {
 
     /// Remove the worktree and delete the branch.
     async fn cleanup(&self) {
-        let _ = Command::new("git")
+        let _ = git_cmd()
             .args(["worktree", "remove", "--force", &self.path])
             .current_dir(&self.git_root)
             .output()
             .await;
-        let _ = Command::new("git")
+        let _ = git_cmd()
             .args(["branch", "-D", &self.branch])
             .current_dir(&self.git_root)
             .output()

@@ -8,7 +8,7 @@ use tracing::{info, warn};
 
 use crate::message::{ContentBlock, Message, Role, StreamEvent, new_uuid};
 use crate::provider::{Chunk, Provider, Request, ResponseMeta, ServerTool, StopReason};
-use crate::tools::{BackgroundAgentResult, ToolContext, ToolRegistry, WorktreeInfo};
+use crate::tools::{BackgroundAgentResult, ToolContext, ToolRegistry, WorktreeInfo, git_cmd};
 
 pub const DEFAULT_MAX_TOKENS: u32 = 32000;
 pub const DEFAULT_MAX_ITERATIONS: usize = 100;
@@ -149,12 +149,12 @@ impl Agent {
     async fn cleanup_background_worktrees(worktrees: &tokio::sync::Mutex<Vec<WorktreeInfo>>) {
         let worktrees = worktrees.lock().await;
         for wt in worktrees.iter() {
-            let _ = tokio::process::Command::new("git")
+            let _ = git_cmd()
                 .args(["worktree", "remove", "--force", &wt.path])
                 .current_dir(&wt.git_root)
                 .output()
                 .await;
-            let _ = tokio::process::Command::new("git")
+            let _ = git_cmd()
                 .args(["branch", "-D", &wt.branch])
                 .current_dir(&wt.git_root)
                 .output()
