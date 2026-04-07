@@ -630,6 +630,7 @@ mod tests {
         assert!(!result.is_error);
         let text = match &result.content[0] {
             ToolResultContent::Text { text } => text.as_str(),
+            _ => panic!("expected text"),
         };
         assert!(text.contains("hello from sub-agent"));
         assert!(text.contains("<usage>"));
@@ -649,6 +650,7 @@ mod tests {
         assert!(result.is_error);
         let text = match &result.content[0] {
             ToolResultContent::Text { text } => text.as_str(),
+            _ => panic!("expected text"),
         };
         assert!(text.contains("Max agent depth"));
     }
@@ -682,6 +684,7 @@ mod tests {
         assert!(!result.is_error);
         let text = match &result.content[0] {
             ToolResultContent::Text { text } => text.as_str(),
+            _ => panic!("expected text"),
         };
         assert!(text.contains("You are a cat."));
     }
@@ -715,6 +718,7 @@ mod tests {
         assert!(!result.is_error);
         let text = match &result.content[0] {
             ToolResultContent::Text { text } => text.as_str(),
+            _ => panic!("expected text"),
         };
         // "haiku" should resolve to the full model ID.
         assert!(text.contains("claude-haiku-4-5-20251001"));
@@ -776,6 +780,7 @@ mod tests {
         assert!(!result.is_error);
         let text = match &result.content[0] {
             ToolResultContent::Text { text } => text.as_str(),
+            _ => panic!("expected text"),
         };
         assert!(
             text.contains("tool_uses: 1"),
@@ -828,6 +833,7 @@ mod tests {
         assert!(!result.is_error);
         let text = match &result.content[0] {
             ToolResultContent::Text { text } => text.as_str(),
+            _ => panic!("expected text"),
         };
         assert!(text.contains("Agent started in background"));
         assert!(text.contains("agentId:"));
@@ -889,6 +895,7 @@ mod tests {
         assert!(result.is_error);
         let text = match &result.content[0] {
             ToolResultContent::Text { text } => text.as_str(),
+            _ => panic!("expected text"),
         };
         assert!(text.contains("Max agent depth"));
     }
@@ -905,6 +912,7 @@ mod tests {
         assert!(result.is_error);
         let text = match &result.content[0] {
             ToolResultContent::Text { text } => text.as_str(),
+            _ => panic!("expected text"),
         };
         assert!(text.contains("Unknown isolation mode"));
     }
@@ -1116,6 +1124,7 @@ mod tests {
         assert!(!result.is_error, "general-purpose should be accepted");
         let text = match &result.content[0] {
             ToolResultContent::Text { text } => text.as_str(),
+            _ => panic!("expected text"),
         };
         assert!(text.contains("hello"));
     }
@@ -1135,6 +1144,7 @@ mod tests {
         assert!(result.is_error);
         let text = match &result.content[0] {
             ToolResultContent::Text { text } => text.as_str(),
+            _ => panic!("expected text"),
         };
         assert!(text.contains("Unknown subagent_type"));
     }
@@ -1172,6 +1182,7 @@ mod tests {
         assert!(!result.is_error);
         let text = match &result.content[0] {
             ToolResultContent::Text { text } => text.as_str(),
+            _ => panic!("expected text"),
         };
         // explore inherits parent model ("test" from make_context)
         assert!(
@@ -1205,6 +1216,7 @@ mod tests {
                                     crate::message::ToolResultContent::Text { text } => {
                                         text.clone()
                                     }
+                                    _ => panic!("expected text"),
                                 })
                             } else {
                                 None
@@ -1256,6 +1268,7 @@ mod tests {
         assert!(!result.is_error);
         let text = match &result.content[0] {
             ToolResultContent::Text { text } => text.as_str(),
+            _ => panic!("expected text"),
         };
         assert!(
             text.contains("Unknown tool"),
@@ -1295,6 +1308,7 @@ mod tests {
         assert!(!result.is_error);
         let text = match &result.content[0] {
             ToolResultContent::Text { text } => text.as_str(),
+            _ => panic!("expected text"),
         };
         assert!(
             text.contains("my-custom-model"),

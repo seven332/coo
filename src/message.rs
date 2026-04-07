@@ -71,6 +71,16 @@ pub enum ContentBlock {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ToolResultContent {
     Text { text: String },
+    Image { source: ImageSource },
+}
+
+/// Base64-encoded image source for tool results.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageSource {
+    #[serde(rename = "type")]
+    pub source_type: String,
+    pub media_type: String,
+    pub data: String,
 }
 
 /// The result returned by a tool execution.
@@ -92,6 +102,19 @@ impl ToolResult {
         Self {
             content: vec![ToolResultContent::Text { text: text.into() }],
             is_error: true,
+        }
+    }
+
+    pub fn image(media_type: impl Into<String>, base64_data: impl Into<String>) -> Self {
+        Self {
+            content: vec![ToolResultContent::Image {
+                source: ImageSource {
+                    source_type: "base64".to_string(),
+                    media_type: media_type.into(),
+                    data: base64_data.into(),
+                },
+            }],
+            is_error: false,
         }
     }
 }

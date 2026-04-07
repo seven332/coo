@@ -154,6 +154,7 @@ fn get_tool_result_content(events: &[StreamEvent], target_id: &str) -> Option<(S
                             .iter()
                             .map(|tc| match tc {
                                 coo::message::ToolResultContent::Text { text } => text.as_str(),
+                                _ => panic!("expected text"),
                             })
                             .collect::<Vec<_>>()
                             .join("\n");
