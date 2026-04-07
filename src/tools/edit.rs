@@ -24,8 +24,13 @@ impl Tool for EditTool {
     }
 
     fn description(&self) -> &str {
-        "Perform exact string replacements in a file. The old_string must match exactly. \
-         Use replace_all to replace every occurrence."
+        "Perform exact string replacements in a file.\n\n\
+         - The old_string must match exactly (including indentation and whitespace).\n\
+         - The edit will fail if old_string is not unique in the file. Provide more \
+         surrounding context to make it unique, or use replace_all to change every occurrence.\n\
+         - Use replace_all for renaming variables or strings across the file.\n\
+         - ALWAYS prefer editing existing files over creating new ones.\n\
+         - You should read a file before editing it to understand existing content."
     }
 
     fn input_schema(&self) -> serde_json::Value {
