@@ -69,8 +69,16 @@ impl Tool for GrepTool {
     }
 
     fn description(&self) -> &str {
-        "Search file contents using regex patterns. Uses ripgrep (rg) if available, \
-         falls back to grep."
+        "Search file contents using regex patterns. Uses ripgrep if available, \
+         falls back to grep.\n\n\
+         - Supports full regex syntax (e.g. \"log.*Error\", \"function\\\\s+\\\\w+\").\n\
+         - Literal braces need escaping (use \"interface\\\\{\\\\}\" to find \"interface{}\").\n\
+         - Filter files with glob parameter (e.g. \"*.rs\") or type parameter (e.g. \"rust\", \"py\").\n\
+         - Output modes: \"files_with_matches\" shows only file paths (default), \
+         \"content\" shows matching lines, \"count\" shows match counts.\n\
+         - Use head_limit to cap output (default: 250 lines). Pass 0 for unlimited.\n\
+         - For cross-line patterns, use multiline: true (rg only).\n\
+         - For open-ended searches requiring multiple rounds, use the agent tool instead."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -91,7 +99,7 @@ impl Tool for GrepTool {
                 },
                 "line_numbers": {
                     "type": "boolean",
-                    "description": "Show line numbers (default: true)"
+                    "description": "Show line numbers (default: true). Requires output_mode: \"content\", ignored otherwise."
                 },
                 "case_insensitive": {
                     "type": "boolean",
@@ -104,7 +112,7 @@ impl Tool for GrepTool {
                 },
                 "head_limit": {
                     "type": "integer",
-                    "description": "Limit output to first N lines/entries (default: 250). Pass 0 for unlimited."
+                    "description": "Limit output to first N lines/entries (default: 250). Pass 0 for unlimited. Works across all output modes: content (limits output lines), files_with_matches (limits file paths), count (limits count entries)."
                 },
                 "-A": {
                     "type": "integer",
