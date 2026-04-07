@@ -24,6 +24,12 @@ struct Input {
     output_mode: String,
     #[serde(default = "default_head_limit")]
     head_limit: usize,
+    #[serde(default, rename = "-A")]
+    after_context: Option<usize>,
+    #[serde(default, rename = "-B")]
+    before_context: Option<usize>,
+    #[serde(default)]
+    context: Option<usize>,
 }
 
 fn default_true() -> bool {
@@ -81,6 +87,18 @@ impl Tool for GrepTool {
                 "head_limit": {
                     "type": "integer",
                     "description": "Limit output to first N lines/entries (default: 250). Pass 0 for unlimited."
+                },
+                "-A": {
+                    "type": "integer",
+                    "description": "Number of lines to show after each match. Requires output_mode: \"content\"."
+                },
+                "-B": {
+                    "type": "integer",
+                    "description": "Number of lines to show before each match. Requires output_mode: \"content\"."
+                },
+                "context": {
+                    "type": "integer",
+                    "description": "Number of lines to show before and after each match (shorthand for -A and -B). Requires output_mode: \"content\"."
                 }
             },
             "required": ["pattern"]
@@ -166,6 +184,17 @@ async fn run_rg(input: &Input, path: &str) -> Result<String, String> {
             if input.line_numbers {
                 cmd.arg("-n");
             }
+            // Context lines: context is shorthand for -A + -B.
+            if let Some(c) = input.context {
+                cmd.arg("-C").arg(c.to_string());
+            } else {
+                if let Some(a) = input.after_context {
+                    cmd.arg("-A").arg(a.to_string());
+                }
+                if let Some(b) = input.before_context {
+                    cmd.arg("-B").arg(b.to_string());
+                }
+            }
         }
     }
 
@@ -206,6 +235,16 @@ async fn run_grep(input: &Input, path: &str) -> Result<String, String> {
         _ => {
             if input.line_numbers {
                 cmd.arg("-n");
+            }
+            if let Some(c) = input.context {
+                cmd.arg("-C").arg(c.to_string());
+            } else {
+                if let Some(a) = input.after_context {
+                    cmd.arg("-A").arg(a.to_string());
+                }
+                if let Some(b) = input.before_context {
+                    cmd.arg("-B").arg(b.to_string());
+                }
             }
         }
     }
@@ -496,6 +535,72 @@ mod tests {
         assert!(!result.is_error);
         let text = text_of(&result);
         assert!(!text.contains("more lines"), "should not be truncated");
+    }
+
+    #[tokio::test]
+    async fn context_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("test.txt"),
+            "line1\nline2\nTARGET\nline4\nline5",
+        )
+        .unwrap();
+
+        let tool = GrepTool;
+        let ctx = crate::tools::dummy_context();
+        let result = tool
+            .call(
+                json!({
+                    "pattern": "TARGET",
+                    "path": dir.path().join("test.txt").to_str().unwrap(),
+                    "output_mode": "content",
+                    "context": 1
+                }),
+                &ctx,
+            )
+            .await;
+        assert!(!result.is_error);
+        let text = text_of(&result);
+        assert!(
+            text.contains("line2"),
+            "should include before context: {text}"
+        );
+        assert!(text.contains("TARGET"));
+        assert!(
+            text.contains("line4"),
+            "should include after context: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn after_context() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("test.txt"), "before\nMATCH\nafter1\nafter2").unwrap();
+
+        let tool = GrepTool;
+        let ctx = crate::tools::dummy_context();
+        let result = tool
+            .call(
+                json!({
+                    "pattern": "MATCH",
+                    "path": dir.path().join("test.txt").to_str().unwrap(),
+                    "output_mode": "content",
+                    "-A": 2
+                }),
+                &ctx,
+            )
+            .await;
+        assert!(!result.is_error);
+        let text = text_of(&result);
+        assert!(text.contains("MATCH"));
+        assert!(
+            text.contains("after1"),
+            "should include after context: {text}"
+        );
+        assert!(
+            text.contains("after2"),
+            "should include after context: {text}"
+        );
     }
 
     #[tokio::test]
