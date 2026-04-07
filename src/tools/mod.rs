@@ -302,6 +302,23 @@ pub static SUBAGENT_TYPES: &[SubAgentType] = &[
     },
 ];
 
+/// Known model friendly names mapped to full model IDs.
+pub static MODEL_ALIASES: &[(&str, &str)] = &[
+    ("sonnet", "claude-sonnet-4-6"),
+    ("opus", "claude-opus-4-6"),
+    ("haiku", "claude-haiku-4-5-20251001"),
+];
+
+/// Resolve a model name: if it matches a known alias, return the full model ID;
+/// otherwise return the input as-is (assumed to be a full model ID already).
+pub fn resolve_model_name(name: &str) -> &str {
+    MODEL_ALIASES
+        .iter()
+        .find(|(alias, _)| *alias == name)
+        .map(|(_, id)| *id)
+        .unwrap_or(name)
+}
+
 /// Look up a built-in sub-agent type by name.
 pub fn get_subagent_type(name: &str) -> Option<&'static SubAgentType> {
     SUBAGENT_TYPES.iter().find(|t| t.name == name)
@@ -469,5 +486,18 @@ mod tests {
         assert!(t.denied_tools.contains(&"write"));
         assert!(t.denied_tools.contains(&"edit"));
         assert!(!t.denied_tools.contains(&"bash")); // bash allowed
+    }
+
+    #[test]
+    fn resolve_model_name_aliases() {
+        assert_eq!(resolve_model_name("sonnet"), "claude-sonnet-4-6");
+        assert_eq!(resolve_model_name("opus"), "claude-opus-4-6");
+        assert_eq!(resolve_model_name("haiku"), "claude-haiku-4-5-20251001");
+    }
+
+    #[test]
+    fn resolve_model_name_passthrough() {
+        assert_eq!(resolve_model_name("my-custom-model"), "my-custom-model");
+        assert_eq!(resolve_model_name("claude-sonnet-4-6"), "claude-sonnet-4-6");
     }
 }
