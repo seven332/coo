@@ -30,6 +30,8 @@ struct Input {
     before_context: Option<usize>,
     #[serde(default)]
     context: Option<usize>,
+    #[serde(default, rename = "type")]
+    file_type: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -99,6 +101,10 @@ impl Tool for GrepTool {
                 "context": {
                     "type": "integer",
                     "description": "Number of lines to show before and after each match (shorthand for -A and -B). Requires output_mode: \"content\"."
+                },
+                "type": {
+                    "type": "string",
+                    "description": "File type to search (rg --type). Common types: js, py, rust, go, java, ts, css, html, json, md."
                 }
             },
             "required": ["pattern"]
@@ -204,6 +210,9 @@ async fn run_rg(input: &Input, path: &str) -> Result<String, String> {
     if let Some(ref g) = input.glob {
         cmd.arg("--glob").arg(g);
     }
+    if let Some(ref t) = input.file_type {
+        cmd.arg("--type").arg(t);
+    }
 
     cmd.arg(&input.pattern).arg(path);
 
@@ -254,6 +263,32 @@ async fn run_grep(input: &Input, path: &str) -> Result<String, String> {
     }
     if let Some(ref g) = input.glob {
         cmd.arg("--include").arg(g);
+    }
+    // grep doesn't have --type; approximate with --include patterns.
+    // Map common rg type names to file extensions.
+    if let Some(ref t) = input.file_type {
+        let extensions = match t.as_str() {
+            "rust" => vec!["rs"],
+            "js" | "javascript" => vec!["js", "mjs", "cjs"],
+            "ts" | "typescript" => vec!["ts", "mts", "cts"],
+            "py" | "python" => vec!["py"],
+            "go" => vec!["go"],
+            "java" => vec!["java"],
+            "css" => vec!["css"],
+            "html" => vec!["html", "htm"],
+            "json" => vec!["json"],
+            "md" | "markdown" => vec!["md"],
+            "yaml" | "yml" => vec!["yaml", "yml"],
+            "toml" => vec!["toml"],
+            "xml" => vec!["xml"],
+            "sh" | "shell" => vec!["sh", "bash", "zsh"],
+            "c" => vec!["c", "h"],
+            "cpp" => vec!["cpp", "cc", "cxx", "hpp", "hxx", "h"],
+            _ => vec![t.as_str()],
+        };
+        for ext in extensions {
+            cmd.arg("--include").arg(format!("*.{ext}"));
+        }
     }
 
     cmd.arg(&input.pattern).arg(path);
@@ -600,6 +635,33 @@ mod tests {
         assert!(
             text.contains("after2"),
             "should include after context: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn type_filter() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("code.rs"), "fn main() {}").unwrap();
+        fs::write(dir.path().join("data.json"), "fn main() {}").unwrap();
+
+        let tool = GrepTool;
+        let ctx = crate::tools::dummy_context();
+        let result = tool
+            .call(
+                json!({
+                    "pattern": "fn main",
+                    "path": dir.path().to_str().unwrap(),
+                    "type": "rust"
+                }),
+                &ctx,
+            )
+            .await;
+        assert!(!result.is_error);
+        let text = text_of(&result);
+        assert!(text.contains("code.rs"), "should match .rs file: {text}");
+        assert!(
+            !text.contains("data.json"),
+            "should not match .json file: {text}"
         );
     }
 
