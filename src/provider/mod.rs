@@ -40,6 +40,11 @@ pub struct Request {
     pub tools: Vec<ToolDefinition>,
     pub server_tools: Vec<ServerTool>,
     pub max_tokens: u32,
+    /// Message index at which to insert a cache breakpoint.
+    /// The last content block of messages[cache_breakpoint] will get
+    /// `cache_control: {"type": "ephemeral"}` to enable prompt cache reuse
+    /// across forked sub-agents sharing the same message prefix.
+    pub cache_breakpoint: Option<usize>,
 }
 
 /// Metadata from the API response (model, message id, usage).

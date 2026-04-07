@@ -34,7 +34,7 @@ impl AnthropicProvider {
 struct ApiRequest<'a> {
     model: &'a str,
     system: Vec<SystemBlock<'a>>,
-    messages: &'a [crate::message::Message],
+    messages: serde_json::Value,
     tools: Vec<serde_json::Value>,
     max_tokens: u32,
     stream: bool,
@@ -199,10 +199,23 @@ impl Provider for AnthropicProvider {
 
         let supports_thinking = !req.model.contains("haiku");
 
+        // Serialize messages and inject cache_control at the breakpoint.
+        let messages = {
+            let mut msgs = serde_json::to_value(&req.messages).unwrap_or_default();
+            if let Some(bp) = req.cache_breakpoint
+                && let Some(msg) = msgs.as_array_mut().and_then(|a| a.get_mut(bp))
+                && let Some(content) = msg.get_mut("content").and_then(|c| c.as_array_mut())
+                && let Some(last_block) = content.last_mut()
+            {
+                last_block["cache_control"] = serde_json::json!({"type": "ephemeral"});
+            }
+            msgs
+        };
+
         let body = ApiRequest {
             model: &req.model,
             system,
-            messages: &req.messages,
+            messages,
             tools,
             max_tokens: req.max_tokens,
             metadata: ApiMetadata {
