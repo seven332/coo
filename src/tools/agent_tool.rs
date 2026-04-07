@@ -205,8 +205,12 @@ impl Tool for AgentTool {
          - Always include a short description (3-5 words) summarizing the task.\n\
          - Launch multiple agents concurrently when tasks are independent. \
          To launch in parallel, make multiple agent tool calls in a single message.\n\
-         - Use foreground (default) when you need results before proceeding. \
-         Use background when you have independent work to do in parallel.\n\
+         - Foreground vs background: Use foreground (default) when you need the agent's \
+         results before you can proceed — e.g., research whose findings inform your next steps. \
+         Use background when you have genuinely independent work to do in parallel.\n\
+         - When an agent runs in the background, you will be automatically notified when \
+         it completes — do NOT sleep, poll, or proactively check on its progress. \
+         Continue with other work or respond to the user instead.\n\
          - The agent result is not visible to the user. Summarize it in your response.\n\
          - The agent's outputs should generally be trusted.\n\
          - Clearly tell the agent whether to write code or just research.\n\
@@ -219,7 +223,8 @@ impl Tool for AgentTool {
          - Describe what you've already tried or ruled out.\n\
          - Give enough context for the agent to make judgment calls.\n\
          - Never delegate understanding: don't write 'based on your findings, fix it'. \
-         Include file paths, line numbers, and what specifically to change.\n\n\
+         Include file paths, line numbers, and what specifically to change.\n\
+         - Terse command-style prompts produce shallow, generic work.\n\n\
          ## Example\n\n\
          prompt: \"Find all usages of the deprecated parse_config() function in src/ \
          and report which files and line numbers still call it.\"\n\
@@ -254,7 +259,7 @@ impl Tool for AgentTool {
                 },
                 "run_in_background": {
                     "type": "boolean",
-                    "description": "Run the agent in the background. Returns immediately with agent ID. You will be notified when it completes — do not poll."
+                    "description": "Run the agent in the background. Returns immediately with agent ID. You will be automatically notified when it completes — do NOT sleep or poll."
                 },
                 "isolation": {
                     "type": "string",
