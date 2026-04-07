@@ -28,6 +28,10 @@ coo is a headless AI agent CLI written in Rust, designed to run in sandbox envir
 
 **Entry point** (`src/main.rs`): CLI arg parsing via clap, wires up provider + tools + agent, spawns the agent loop on tokio, and prints stream events as NDJSON lines.
 
+## Language
+
+All code, comments, issues, and commit messages must be written in English.
+
 ## Commit Convention
 
 Use [Conventional Commits v1.0.0](https://www.conventionalcommits.org/en/v1.0.0/). Format: `type(scope): description`.
