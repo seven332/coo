@@ -28,6 +28,31 @@ fn default_timeout() -> u64 {
     120
 }
 
+/// Maximum output size in bytes. Output exceeding this is truncated,
+/// keeping the first and last portions with a marker in between.
+const MAX_OUTPUT_BYTES: usize = 128 * 1024; // 128 KB
+
+/// Truncate output if it exceeds MAX_OUTPUT_BYTES, keeping head and tail.
+fn truncate_output(text: String) -> String {
+    if text.len() <= MAX_OUTPUT_BYTES {
+        return text;
+    }
+    // Keep roughly equal head and tail, with room for the marker.
+    let marker = "\n\n... [output truncated] ...\n\n";
+    let half = (MAX_OUTPUT_BYTES - marker.len()) / 2;
+    // Find char boundaries to avoid splitting multi-byte characters.
+    let head_end = text.floor_char_boundary(half);
+    let tail_start = text.ceil_char_boundary(text.len() - half);
+    let truncated_bytes = tail_start - head_end;
+    format!(
+        "{}{}({} bytes truncated){}",
+        &text[..head_end],
+        marker,
+        truncated_bytes,
+        &text[tail_start..]
+    )
+}
+
 /// Execute a bash command with timeout. Returns (output_text, is_error).
 async fn run_command(
     command: &str,
@@ -59,10 +84,13 @@ async fn run_command(
                 text.push_str("(no output)");
             }
             if output.status.success() {
-                (text, false)
+                (truncate_output(text), false)
             } else {
                 (
-                    format!("Exit code: {}\n{text}", output.status.code().unwrap_or(-1)),
+                    truncate_output(format!(
+                        "Exit code: {}\n{text}",
+                        output.status.code().unwrap_or(-1)
+                    )),
                     true,
                 )
             }
@@ -318,6 +346,32 @@ mod tests {
             .expect("should receive result");
         assert!(bg_result.is_error);
         assert!(bg_result.result.contains("Exit code: 42"));
+    }
+
+    #[test]
+    fn truncate_short_output() {
+        let text = "hello world".to_string();
+        let result = truncate_output(text.clone());
+        assert_eq!(result, text);
+    }
+
+    #[test]
+    fn truncate_long_output() {
+        let text = "x".repeat(MAX_OUTPUT_BYTES + 1000);
+        let result = truncate_output(text);
+        assert!(result.len() <= MAX_OUTPUT_BYTES + 100); // some slack for marker
+        assert!(result.contains("[output truncated]"));
+        assert!(result.contains("bytes truncated"));
+        // Head and tail preserved.
+        assert!(result.starts_with("xxx"));
+        assert!(result.ends_with("xxx"));
+    }
+
+    #[test]
+    fn truncate_exact_boundary() {
+        let text = "a".repeat(MAX_OUTPUT_BYTES);
+        let result = truncate_output(text.clone());
+        assert_eq!(result, text); // exactly at limit, no truncation
     }
 
     #[tokio::test]
