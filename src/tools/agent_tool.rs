@@ -25,16 +25,6 @@ impl Drop for AbortOnDrop {
     }
 }
 
-/// Decrements an atomic counter on drop, ensuring the count is accurate
-/// even if the owning task panics before reaching the explicit decrement.
-struct PendingGuard(Arc<std::sync::atomic::AtomicUsize>);
-
-impl Drop for PendingGuard {
-    fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::SeqCst);
-    }
-}
-
 /// Worktree state for cleanup after sub-agent completes.
 struct Worktree {
     path: String,
@@ -408,7 +398,7 @@ impl Tool for AgentTool {
                 // Guard ensures pending is decremented even on panic/abort.
                 // Dropped after send, so the parent's wait loop sees pending > 0
                 // until the result is in the channel and ready to be received.
-                let _pending_guard = PendingGuard(pending);
+                let _pending_guard = super::PendingGuard(pending);
 
                 let (event_tx, mut event_rx) = mpsc::channel::<StreamEvent>(128);
                 let start = Instant::now();
@@ -1077,7 +1067,7 @@ mod tests {
     async fn pending_guard_decrements_on_drop() {
         let counter = Arc::new(std::sync::atomic::AtomicUsize::new(1));
         {
-            let _guard = PendingGuard(counter.clone());
+            let _guard = crate::tools::PendingGuard(counter.clone());
             assert_eq!(counter.load(Ordering::SeqCst), 1);
         }
         assert_eq!(counter.load(Ordering::SeqCst), 0);
@@ -1088,7 +1078,7 @@ mod tests {
         let counter = Arc::new(std::sync::atomic::AtomicUsize::new(1));
         let c = counter.clone();
         let handle = tokio::spawn(async move {
-            let _guard = PendingGuard(c);
+            let _guard = crate::tools::PendingGuard(c);
             panic!("intentional panic");
         });
         let _ = handle.await; // JoinError::Panic
