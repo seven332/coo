@@ -22,6 +22,8 @@ struct Input {
     case_insensitive: bool,
     #[serde(default = "default_output_mode")]
     output_mode: String,
+    #[serde(default = "default_head_limit")]
+    head_limit: usize,
 }
 
 fn default_true() -> bool {
@@ -30,6 +32,10 @@ fn default_true() -> bool {
 
 fn default_output_mode() -> String {
     "files_with_matches".to_string()
+}
+
+fn default_head_limit() -> usize {
+    250
 }
 
 #[async_trait]
@@ -71,6 +77,10 @@ impl Tool for GrepTool {
                     "type": "string",
                     "enum": ["content", "files_with_matches", "count"],
                     "description": "Output mode: \"content\" shows matching lines, \"files_with_matches\" shows only file paths (default), \"count\" shows match counts per file."
+                },
+                "head_limit": {
+                    "type": "integer",
+                    "description": "Limit output to first N lines/entries (default: 250). Pass 0 for unlimited."
                 }
             },
             "required": ["pattern"]
@@ -120,6 +130,17 @@ impl Tool for GrepTool {
             Ok(text) => {
                 if text.is_empty() {
                     ToolResult::success("No matches found.")
+                } else if input.head_limit > 0 {
+                    let lines: Vec<&str> = text.lines().collect();
+                    if lines.len() > input.head_limit {
+                        let truncated: String = lines[..input.head_limit].join("\n");
+                        let omitted = lines.len() - input.head_limit;
+                        ToolResult::success(format!(
+                            "{truncated}\n\n... ({omitted} more lines, use head_limit to see more)"
+                        ))
+                    } else {
+                        ToolResult::success(text)
+                    }
                 } else {
                     ToolResult::success(text)
                 }
@@ -415,6 +436,66 @@ mod tests {
             .await;
         assert!(result.is_error);
         assert!(text_of(&result).contains("Unknown output_mode"));
+    }
+
+    #[tokio::test]
+    async fn head_limit_truncates() {
+        let dir = tempfile::tempdir().unwrap();
+        // Create a file with many matching lines.
+        let content: String = (0..100).map(|i| format!("match line {i}\n")).collect();
+        fs::write(dir.path().join("big.txt"), &content).unwrap();
+
+        let tool = GrepTool;
+        let ctx = crate::tools::dummy_context();
+        let result = tool
+            .call(
+                json!({
+                    "pattern": "match",
+                    "path": dir.path().join("big.txt").to_str().unwrap(),
+                    "output_mode": "content",
+                    "head_limit": 5
+                }),
+                &ctx,
+            )
+            .await;
+        assert!(!result.is_error);
+        let text = text_of(&result);
+        // Should have exactly 5 result lines plus the truncation marker.
+        assert!(
+            text.contains("more lines"),
+            "should be truncated, got: {text}"
+        );
+        let lines: Vec<&str> = text.lines().collect();
+        // 5 content lines + 1 blank + 1 marker = 7
+        assert!(
+            lines.len() < 10,
+            "should be limited, got {} lines",
+            lines.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn head_limit_zero_unlimited() {
+        let dir = tempfile::tempdir().unwrap();
+        let content: String = (0..10).map(|i| format!("line {i}\n")).collect();
+        fs::write(dir.path().join("test.txt"), &content).unwrap();
+
+        let tool = GrepTool;
+        let ctx = crate::tools::dummy_context();
+        let result = tool
+            .call(
+                json!({
+                    "pattern": "line",
+                    "path": dir.path().join("test.txt").to_str().unwrap(),
+                    "output_mode": "content",
+                    "head_limit": 0
+                }),
+                &ctx,
+            )
+            .await;
+        assert!(!result.is_error);
+        let text = text_of(&result);
+        assert!(!text.contains("more lines"), "should not be truncated");
     }
 
     #[tokio::test]
