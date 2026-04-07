@@ -32,6 +32,8 @@ struct Input {
     context: Option<usize>,
     #[serde(default, rename = "type")]
     file_type: Option<String>,
+    #[serde(default)]
+    multiline: bool,
 }
 
 fn default_true() -> bool {
@@ -105,6 +107,10 @@ impl Tool for GrepTool {
                 "type": {
                     "type": "string",
                     "description": "File type to search (rg --type). Common types: js, py, rust, go, java, ts, css, html, json, md."
+                },
+                "multiline": {
+                    "type": "boolean",
+                    "description": "Enable multiline mode where . matches newlines and patterns can span lines (rg -U --multiline-dotall). Default: false. Only supported with rg."
                 }
             },
             "required": ["pattern"]
@@ -177,6 +183,10 @@ impl Tool for GrepTool {
 async fn run_rg(input: &Input, path: &str) -> Result<String, String> {
     let mut cmd = Command::new("rg");
     cmd.arg("--no-heading");
+
+    if input.multiline {
+        cmd.arg("-U").arg("--multiline-dotall");
+    }
 
     match input.output_mode.as_str() {
         "files_with_matches" => {
@@ -663,6 +673,47 @@ mod tests {
             !text.contains("data.json"),
             "should not match .json file: {text}"
         );
+    }
+
+    #[tokio::test]
+    async fn multiline_search() {
+        // multiline requires rg; skip if not available.
+        let has_rg = std::process::Command::new("rg")
+            .arg("--version")
+            .output()
+            .is_ok_and(|o| o.status.success());
+        if !has_rg {
+            eprintln!("skipping multiline_search: rg not installed");
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("test.txt"),
+            "struct Foo {\n    field: i32,\n}",
+        )
+        .unwrap();
+
+        let tool = GrepTool;
+        let ctx = crate::tools::dummy_context();
+        let result = tool
+            .call(
+                json!({
+                    "pattern": "struct Foo \\{[\\s\\S]*?field",
+                    "path": dir.path().join("test.txt").to_str().unwrap(),
+                    "output_mode": "content",
+                    "multiline": true
+                }),
+                &ctx,
+            )
+            .await;
+        assert!(!result.is_error);
+        let text = text_of(&result);
+        assert!(
+            text.contains("struct Foo"),
+            "should match across lines: {text}"
+        );
+        assert!(text.contains("field"), "should include field: {text}");
     }
 
     #[tokio::test]
