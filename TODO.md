@@ -7,6 +7,6 @@
 - [x] Add `-A`/`-B`/`-C`/`context` parameters for context lines
 - [x] Add `type` parameter for file type filtering (rg --type)
 - [x] Add `multiline` parameter for cross-line matching (rg -U)
-- [ ] Add `offset` parameter to skip first N results
+- [x] Add `offset` parameter to skip first N results
 - [ ] Cache rg availability check instead of running `rg --version` every call
 - [ ] Improve description with usage guidance

@@ -34,6 +34,8 @@ struct Input {
     file_type: Option<String>,
     #[serde(default)]
     multiline: bool,
+    #[serde(default)]
+    offset: usize,
 }
 
 fn default_true() -> bool {
@@ -111,6 +113,10 @@ impl Tool for GrepTool {
                 "multiline": {
                     "type": "boolean",
                     "description": "Enable multiline mode where . matches newlines and patterns can span lines (rg -U --multiline-dotall). Default: false. Only supported with rg."
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "Skip first N lines/entries before applying head_limit (default: 0)."
                 }
             },
             "required": ["pattern"]
@@ -160,19 +166,30 @@ impl Tool for GrepTool {
             Ok(text) => {
                 if text.is_empty() {
                     ToolResult::success("No matches found.")
-                } else if input.head_limit > 0 {
-                    let lines: Vec<&str> = text.lines().collect();
-                    if lines.len() > input.head_limit {
+                } else {
+                    let mut lines: Vec<&str> = text.lines().collect();
+                    let total = lines.len();
+
+                    // Apply offset.
+                    if input.offset > 0 {
+                        if input.offset >= lines.len() {
+                            return ToolResult::success(
+                                "No matches found (offset exceeds results).",
+                            );
+                        }
+                        lines = lines[input.offset..].to_vec();
+                    }
+
+                    // Apply head_limit.
+                    if input.head_limit > 0 && lines.len() > input.head_limit {
                         let truncated: String = lines[..input.head_limit].join("\n");
-                        let omitted = lines.len() - input.head_limit;
+                        let omitted = total - input.offset - input.head_limit;
                         ToolResult::success(format!(
-                            "{truncated}\n\n... ({omitted} more lines, use head_limit to see more)"
+                            "{truncated}\n\n... ({omitted} more lines, use offset/head_limit to paginate)"
                         ))
                     } else {
-                        ToolResult::success(text)
+                        ToolResult::success(lines.join("\n"))
                     }
-                } else {
-                    ToolResult::success(text)
                 }
             }
             Err(e) => ToolResult::error(e),
@@ -714,6 +731,55 @@ mod tests {
             "should match across lines: {text}"
         );
         assert!(text.contains("field"), "should include field: {text}");
+    }
+
+    #[tokio::test]
+    async fn offset_skips_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let content: String = (0..10).map(|i| format!("line{i}\n")).collect();
+        fs::write(dir.path().join("test.txt"), &content).unwrap();
+
+        let tool = GrepTool;
+        let ctx = crate::tools::dummy_context();
+        let result = tool
+            .call(
+                json!({
+                    "pattern": "line",
+                    "path": dir.path().join("test.txt").to_str().unwrap(),
+                    "output_mode": "content",
+                    "offset": 7,
+                    "head_limit": 0
+                }),
+                &ctx,
+            )
+            .await;
+        assert!(!result.is_error);
+        let text = text_of(&result);
+        assert!(!text.contains("line0"), "should skip first 7: {text}");
+        assert!(text.contains("line7"), "should include line7: {text}");
+        assert!(text.contains("line9"), "should include line9: {text}");
+    }
+
+    #[tokio::test]
+    async fn offset_exceeds_results() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("test.txt"), "one match").unwrap();
+
+        let tool = GrepTool;
+        let ctx = crate::tools::dummy_context();
+        let result = tool
+            .call(
+                json!({
+                    "pattern": "match",
+                    "path": dir.path().join("test.txt").to_str().unwrap(),
+                    "output_mode": "content",
+                    "offset": 100
+                }),
+                &ctx,
+            )
+            .await;
+        assert!(!result.is_error);
+        assert!(text_of(&result).contains("offset exceeds"));
     }
 
     #[tokio::test]
