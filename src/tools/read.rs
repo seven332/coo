@@ -119,11 +119,13 @@ impl Tool for ReadTool {
                 },
                 "offset": {
                     "type": "integer",
-                    "description": "Line number to start reading from (0-based)"
+                    "description": "Line number to start reading from (0-based)",
+                    "minimum": 0
                 },
                 "limit": {
                     "type": "integer",
-                    "description": "Maximum number of lines to read"
+                    "description": "Maximum number of lines to read",
+                    "exclusiveMinimum": 0
                 },
                 "pages": {
                     "type": "string",
