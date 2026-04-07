@@ -100,7 +100,13 @@ impl Tool for ReadTool {
     }
 
     fn description(&self) -> &str {
-        "Read a file from the filesystem. Returns content with line numbers."
+        "Read a file from the filesystem.\n\n\
+         - Returns content with line numbers (1-based).\n\
+         - By default reads up to 2000 lines from the start. Use `offset` and `limit` to read specific portions of large files.\n\
+         - Reads image files (PNG, JPEG, GIF, WebP) as base64-encoded image content.\n\
+         - Reads PDF files with optional `pages` parameter for page ranges (e.g. \"1-5\"). \
+           Large PDFs (more than 20 pages) require an explicit `pages` parameter.\n\
+         - Can only read files, not directories. Use bash with `ls` for directories."
     }
 
     fn input_schema(&self) -> serde_json::Value {
