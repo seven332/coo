@@ -358,6 +358,7 @@ mod tests {
     fn text_of(result: &crate::message::ToolResult) -> &str {
         match &result.content[0] {
             crate::message::ToolResultContent::Text { text } => text,
+            _ => panic!("expected text"),
         }
     }
 

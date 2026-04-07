@@ -256,6 +256,7 @@ mod tests {
         assert!(result.is_error);
         let text = match &result.content[0] {
             ToolResultContent::Text { text } => text.as_str(),
+            _ => panic!("expected text"),
         };
         assert!(text.contains("not found"));
     }
@@ -275,6 +276,7 @@ mod tests {
         // Extract agent ID from result.
         let text = match &result.content[0] {
             ToolResultContent::Text { text } => text.as_str(),
+            _ => panic!("expected text"),
         };
         let agent_id = text
             .lines()
@@ -298,6 +300,7 @@ mod tests {
         assert!(!result.is_error);
         let text = match &result.content[0] {
             ToolResultContent::Text { text } => text.as_str(),
+            _ => panic!("expected text"),
         };
         assert!(text.contains("follow-up question"));
         assert!(text.contains("agentId:"));
@@ -319,6 +322,7 @@ mod tests {
         assert!(!result.is_error);
         let text = match &result.content[0] {
             ToolResultContent::Text { text } => text.as_str(),
+            _ => panic!("expected text"),
         };
         assert!(text.contains("agentName: my-researcher"));
 
@@ -333,6 +337,7 @@ mod tests {
         assert!(!result.is_error);
         let text = match &result.content[0] {
             ToolResultContent::Text { text } => text.as_str(),
+            _ => panic!("expected text"),
         };
         assert!(text.contains("continue research"));
     }
@@ -362,6 +367,7 @@ mod tests {
         assert!(!result.is_error);
         let text = match &result.content[0] {
             ToolResultContent::Text { text } => text.as_str(),
+            _ => panic!("expected text"),
         };
         assert!(text.contains("task 3"));
     }
@@ -391,6 +397,7 @@ mod tests {
         assert!(result.is_error);
         let text = match &result.content[0] {
             ToolResultContent::Text { text } => text.as_str(),
+            _ => panic!("expected text"),
         };
         assert!(text.contains("Max agent depth"));
     }

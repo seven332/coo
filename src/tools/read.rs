@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use base64::Engine as _;
 use serde::Deserialize;
 use serde_json::json;
 
@@ -7,6 +8,18 @@ use crate::message::ToolResult;
 use super::Tool;
 
 pub struct ReadTool;
+
+/// Detect media type from file extension. Returns None for non-image files.
+fn image_media_type(path: &std::path::Path) -> Option<&'static str> {
+    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    match ext.as_str() {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        _ => None,
+    }
+}
 
 #[derive(Deserialize)]
 struct Input {
@@ -55,6 +68,28 @@ impl Tool for ReadTool {
         };
 
         let path = context.resolve_path(&input.file_path);
+
+        // Handle image files: return as base64-encoded image content block.
+        if let Some(media_type) = image_media_type(&path) {
+            let bytes = match tokio::fs::read(&path).await {
+                Ok(b) => b,
+                Err(e) => {
+                    return ToolResult::error(format!("Failed to read {}: {e}", path.display()));
+                }
+            };
+            // Reject images larger than 10 MB to avoid excessive token usage.
+            const MAX_IMAGE_BYTES: usize = 10 * 1024 * 1024;
+            if bytes.len() > MAX_IMAGE_BYTES {
+                return ToolResult::error(format!(
+                    "Image too large ({} bytes, max {})",
+                    bytes.len(),
+                    MAX_IMAGE_BYTES
+                ));
+            }
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+            return ToolResult::image(media_type, b64);
+        }
+
         let content = match tokio::fs::read_to_string(&path).await {
             Ok(c) => c,
             Err(e) => return ToolResult::error(format!("Failed to read {}: {e}", path.display())),
@@ -95,6 +130,7 @@ mod tests {
     fn text_of(result: &crate::message::ToolResult) -> &str {
         match &result.content[0] {
             crate::message::ToolResultContent::Text { text } => text,
+            _ => panic!("expected text"),
         }
     }
 
@@ -178,6 +214,50 @@ mod tests {
             .call(json!({"file_path": path.to_str().unwrap()}), &ctx)
             .await;
         assert!(result.is_error);
+    }
+
+    #[tokio::test]
+    async fn read_png_image() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.png");
+        // Minimal valid PNG (1x1 pixel).
+        let png_data = b"\x89PNG\r\n\x1a\n";
+        std::fs::write(&path, png_data).unwrap();
+
+        let tool = ReadTool;
+        let ctx = crate::tools::dummy_context();
+        let result = tool
+            .call(json!({"file_path": path.to_str().unwrap()}), &ctx)
+            .await;
+        assert!(!result.is_error);
+        match &result.content[0] {
+            crate::message::ToolResultContent::Image { source } => {
+                assert_eq!(source.media_type, "image/png");
+                assert_eq!(source.source_type, "base64");
+                assert!(!source.data.is_empty());
+            }
+            _ => panic!("expected image content"),
+        }
+    }
+
+    #[tokio::test]
+    async fn read_jpg_image() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.jpg");
+        std::fs::write(&path, b"\xff\xd8\xff").unwrap();
+
+        let tool = ReadTool;
+        let ctx = crate::tools::dummy_context();
+        let result = tool
+            .call(json!({"file_path": path.to_str().unwrap()}), &ctx)
+            .await;
+        assert!(!result.is_error);
+        match &result.content[0] {
+            crate::message::ToolResultContent::Image { source } => {
+                assert_eq!(source.media_type, "image/jpeg");
+            }
+            _ => panic!("expected image content"),
+        }
     }
 
     #[tokio::test]

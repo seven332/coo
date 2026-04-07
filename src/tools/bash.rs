@@ -236,6 +236,7 @@ mod tests {
         assert!(!result.is_error);
         let text = match &result.content[0] {
             crate::message::ToolResultContent::Text { text } => text.as_str(),
+            _ => panic!("expected text"),
         };
         assert_eq!(text.trim(), "hello");
     }
@@ -273,6 +274,7 @@ mod tests {
         let result = tool.call(json!({"command": "echo err >&2"}), &ctx).await;
         let text = match &result.content[0] {
             crate::message::ToolResultContent::Text { text } => text.clone(),
+            _ => panic!("expected text"),
         };
         assert!(text.contains("stderr:"));
         assert!(text.contains("err"));
@@ -286,6 +288,7 @@ mod tests {
         assert!(!result.is_error);
         let text = match &result.content[0] {
             crate::message::ToolResultContent::Text { text } => text.as_str(),
+            _ => panic!("expected text"),
         };
         assert_eq!(text, "(no output)");
     }
@@ -301,6 +304,7 @@ mod tests {
         assert!(!result.is_error);
         let text = match &result.content[0] {
             crate::message::ToolResultContent::Text { text } => text.as_str(),
+            _ => panic!("expected text"),
         };
         assert_eq!(text.trim(), canonical.to_str().unwrap());
     }
@@ -318,6 +322,7 @@ mod tests {
         assert!(!result.is_error);
         let text = match &result.content[0] {
             crate::message::ToolResultContent::Text { text } => text.as_str(),
+            _ => panic!("expected text"),
         };
         assert!(text.contains("Command started in background"));
         assert!(text.contains("taskId:"));
