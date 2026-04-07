@@ -184,7 +184,8 @@ impl Tool for AgentTool {
 
     fn description(&self) -> &str {
         "Launch a sub-agent to handle complex, multi-step tasks autonomously.\n\n\
-         Each agent runs in its own context with its own tool access.\n\n\
+         Each agent runs in its own context with its own tool access. \
+         Each invocation starts fresh — provide a complete task description.\n\n\
          ## Available agent types\n\n\
          - general-purpose (default): Full tool access. For complex multi-step tasks, \
          code changes, and work requiring both research and modification. \
@@ -202,19 +203,28 @@ impl Tool for AgentTool {
          - For simple single-step tasks: use the tool directly\n\n\
          ## Usage notes\n\n\
          - Always include a short description (3-5 words) summarizing the task.\n\
-         - Launch multiple agents concurrently when tasks are independent.\n\
+         - Launch multiple agents concurrently when tasks are independent. \
+         To launch in parallel, make multiple agent tool calls in a single message.\n\
          - Use foreground (default) when you need results before proceeding. \
          Use background when you have independent work to do in parallel.\n\
          - The agent result is not visible to the user. Summarize it in your response.\n\
+         - The agent's outputs should generally be trusted.\n\
          - Clearly tell the agent whether to write code or just research.\n\
-         - Set isolation: 'worktree' for agents that modify files in parallel.\n\n\
+         - Set isolation: 'worktree' for agents that modify files in parallel.\n\
+         - To continue a previously spawned agent, use send_message with the \
+         agent's name or ID. The agent resumes with its full context preserved.\n\n\
          ## Writing the prompt\n\n\
          Brief the agent like a colleague who just walked in — no prior context.\n\
          - Explain what you want and why.\n\
          - Describe what you've already tried or ruled out.\n\
          - Give enough context for the agent to make judgment calls.\n\
          - Never delegate understanding: don't write 'based on your findings, fix it'. \
-         Include file paths, line numbers, and what specifically to change."
+         Include file paths, line numbers, and what specifically to change.\n\n\
+         ## Example\n\n\
+         prompt: \"Find all usages of the deprecated parse_config() function in src/ \
+         and report which files and line numbers still call it.\"\n\
+         description: \"find deprecated parse_config usage\"\n\
+         subagent_type: \"explore\""
     }
 
     fn input_schema(&self) -> serde_json::Value {
