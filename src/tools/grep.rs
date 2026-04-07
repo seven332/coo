@@ -1,3 +1,5 @@
+use std::sync::OnceLock;
+
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
@@ -6,6 +8,16 @@ use tokio::process::Command;
 use crate::message::ToolResult;
 
 use super::Tool;
+
+/// Cached result of checking whether rg is available.
+static HAS_RG: OnceLock<bool> = OnceLock::new();
+
+fn check_rg() -> bool {
+    std::process::Command::new("rg")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
 
 pub struct GrepTool;
 
@@ -149,12 +161,7 @@ impl Tool for GrepTool {
             .unwrap_or(std::path::Path::new("."))
             .to_string_lossy();
 
-        // Try rg first, fall back to grep.
-        let has_rg = Command::new("rg")
-            .arg("--version")
-            .output()
-            .await
-            .is_ok_and(|o| o.status.success());
+        let has_rg = *HAS_RG.get_or_init(check_rg);
 
         let output = if has_rg {
             run_rg(&input, &search_path).await
