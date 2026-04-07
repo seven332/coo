@@ -79,7 +79,19 @@ impl Tool for BashTool {
     }
 
     fn description(&self) -> &str {
-        "Execute a bash command and return its output."
+        "Execute a bash command and return its output.\n\n\
+         Do NOT use bash when a dedicated tool is available:\n\
+         - File search: use glob (not find or ls)\n\
+         - Content search: use grep (not grep or rg)\n\
+         - Read files: use read (not cat/head/tail)\n\
+         - Edit files: use edit (not sed/awk)\n\
+         - Create files: use write (not echo/cat)\n\n\
+         Reserve bash for system commands and terminal operations that require shell execution.\n\n\
+         Tips:\n\
+         - Prefer absolute paths over cd.\n\
+         - Quote file paths with spaces.\n\
+         - Chain sequential commands with && or ;.\n\
+         - Use run_in_background for long-running commands."
     }
 
     fn input_schema(&self) -> serde_json::Value {
