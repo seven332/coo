@@ -402,6 +402,7 @@ impl Tool for AgentTool {
             let bg_completed_agents = context.completed_agents.clone();
             let bg_running_agents = context.running_agents.clone();
             let bg_name_registry = context.agent_name_registry.clone();
+            let bg_pending_messages = context.pending_messages.clone();
             let bg_agent_id = agent_id.clone();
             let bg_agent_name = agent_name.clone();
             let bg_description = description.clone();
@@ -465,11 +466,25 @@ impl Tool for AgentTool {
                     bg_worktrees.lock().await.retain(|w| w.path != *path);
                 }
 
-                // Deregister from running agents and store as completed for resumption.
+                // Deregister from running agents.
                 bg_running_agents.lock().await.remove(&bg_agent_id);
                 if let Some(ref name) = bg_agent_name {
                     bg_name_registry.lock().await.remove(name);
                 }
+                // Drain any messages queued after the agent loop exited (race window).
+                let orphaned_msgs = bg_pending_messages
+                    .lock()
+                    .await
+                    .remove(&bg_agent_id)
+                    .unwrap_or_default();
+                if !orphaned_msgs.is_empty() {
+                    let count = orphaned_msgs.len();
+                    result.push_str(&format!(
+                        "\n({count} queued message(s) arrived after agent finished: {})",
+                        orphaned_msgs.join(" | ")
+                    ));
+                }
+                // Store as completed for resumption via SendMessage.
                 if let Some(msgs) = agent_messages {
                     bg_completed_agents.lock().await.insert(
                         bg_agent_id.clone(),
