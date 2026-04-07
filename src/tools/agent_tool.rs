@@ -235,7 +235,8 @@ impl Tool for AgentTool {
                 },
                 "model": {
                     "type": "string",
-                    "description": "Optional model override. If omitted, inherits from the parent agent."
+                    "enum": ["sonnet", "opus", "haiku"],
+                    "description": "Optional model override for this agent. Takes precedence over the subagent_type's model. If omitted, inherits from the parent agent."
                 },
                 "system": {
                     "type": "string",
@@ -295,12 +296,16 @@ impl Tool for AgentTool {
 
         let description = input.description.unwrap_or_default();
         // subagent_type defaults < explicit input overrides
-        let model = input.model.unwrap_or_else(|| {
-            agent_type
-                .and_then(|t| t.model)
-                .unwrap_or(&context.model)
-                .to_string()
-        });
+        // Friendly names (sonnet/opus/haiku) are resolved to full model IDs.
+        let model = input
+            .model
+            .map(|m| super::resolve_model_name(&m).to_string())
+            .unwrap_or_else(|| {
+                agent_type
+                    .and_then(|t| t.model)
+                    .unwrap_or(&context.model)
+                    .to_string()
+            });
         let system = input.system.unwrap_or_else(|| {
             agent_type
                 .and_then(|t| t.system)
@@ -700,15 +705,13 @@ mod tests {
 
         let tool = AgentTool;
         let result = tool
-            .call(
-                json!({"prompt": "test", "model": "claude-haiku-4-5-20251001"}),
-                &ctx,
-            )
+            .call(json!({"prompt": "test", "model": "haiku"}), &ctx)
             .await;
         assert!(!result.is_error);
         let text = match &result.content[0] {
             ToolResultContent::Text { text } => text.as_str(),
         };
+        // "haiku" should resolve to the full model ID.
         assert!(text.contains("claude-haiku-4-5-20251001"));
     }
 
