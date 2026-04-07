@@ -24,8 +24,11 @@ struct Input {
     run_in_background: bool,
 }
 
+/// Maximum timeout in milliseconds (10 minutes).
+const MAX_TIMEOUT_MS: u64 = 600_000;
+
 fn default_timeout() -> u64 {
-    120
+    120_000
 }
 
 /// Maximum output size in bytes. Output exceeding this is truncated,
@@ -136,7 +139,7 @@ impl Tool for BashTool {
                 },
                 "timeout": {
                     "type": "integer",
-                    "description": "Timeout in seconds (default: 120)"
+                    "description": "Timeout in milliseconds (default: 120000, max: 600000)"
                 },
                 "run_in_background": {
                     "type": "boolean",
@@ -155,9 +158,11 @@ impl Tool for BashTool {
 
         let description = input.description.unwrap_or_default();
 
+        let timeout_ms = input.timeout.min(MAX_TIMEOUT_MS);
+
         if input.run_in_background {
             let task_id = new_uuid();
-            let timeout = std::time::Duration::from_secs(input.timeout);
+            let timeout = std::time::Duration::from_millis(timeout_ms);
             let cwd = context.cwd.clone();
             let background_tx = context.background_tx.clone();
             let pending = context.pending_background.clone();
@@ -193,7 +198,7 @@ impl Tool for BashTool {
                 "Command started in background.\ntaskId: {task_id}\ndescription: {description}"
             ))
         } else {
-            let timeout = std::time::Duration::from_secs(input.timeout);
+            let timeout = std::time::Duration::from_millis(timeout_ms);
             let (result, is_error) =
                 run_command(&input.command, timeout, context.cwd.as_deref()).await;
             if is_error {
@@ -256,7 +261,7 @@ mod tests {
         let tool = BashTool;
         let ctx = crate::tools::dummy_context();
         let result = tool
-            .call(json!({"command": "sleep 10", "timeout": 1}), &ctx)
+            .call(json!({"command": "sleep 10", "timeout": 500}), &ctx)
             .await;
         assert!(result.is_error);
     }
@@ -380,7 +385,7 @@ mod tests {
         let tool = BashTool;
         let result = tool
             .call(
-                json!({"command": "sleep 60", "run_in_background": true, "timeout": 1}),
+                json!({"command": "sleep 60", "run_in_background": true, "timeout": 500}),
                 &ctx,
             )
             .await;
