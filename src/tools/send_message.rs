@@ -239,6 +239,7 @@ mod tests {
             background_handles: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             background_worktrees: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             completed_agents: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            parent_messages: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             cwd: None,
         }
     }

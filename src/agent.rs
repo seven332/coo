@@ -26,6 +26,9 @@ pub struct Agent {
     pub max_depth: usize,
     pub session_id: String,
     pub cwd: Option<String>,
+    /// Messages to prepend before the prompt (for fork optimization / prompt cache reuse).
+    /// The cache_breakpoint is automatically set to the last prefix message.
+    pub prefix_messages: Vec<Message>,
 }
 
 impl Agent {
@@ -47,6 +50,7 @@ impl Agent {
             max_depth: DEFAULT_MAX_DEPTH,
             session_id: new_uuid(),
             cwd: None,
+            prefix_messages: Vec::new(),
         }
     }
 
@@ -163,6 +167,7 @@ impl Agent {
     }
 
     /// Run the agent loop with a fresh prompt. Returns the conversation messages.
+    /// If `prefix_messages` is set, they are prepended for prompt cache reuse.
     pub async fn run(
         &self,
         prompt: String,
@@ -184,7 +189,8 @@ impl Agent {
             })
             .await;
 
-        let messages = vec![user_msg];
+        let mut messages = self.prefix_messages.clone();
+        messages.push(user_msg);
         self.run_loop(messages, event_tx).await
     }
 
@@ -233,6 +239,7 @@ impl Agent {
             String,
             crate::tools::CompletedAgent,
         >::new()));
+        let parent_messages = Arc::new(tokio::sync::Mutex::new(Vec::new()));
 
         let tool_context = ToolContext {
             provider: self.provider.clone(),
@@ -248,6 +255,7 @@ impl Agent {
             background_handles: background_handles.clone(),
             background_worktrees: background_worktrees.clone(),
             completed_agents,
+            parent_messages: parent_messages.clone(),
             cwd: self.cwd.clone(),
         };
 
@@ -275,6 +283,13 @@ impl Agent {
             // Call LLM.
             let (chunk_tx, mut chunk_rx) = mpsc::channel::<Chunk>(64);
 
+            // Set cache breakpoint at the last prefix message (if any) for prompt cache reuse.
+            let cache_breakpoint = if !self.prefix_messages.is_empty() {
+                Some(self.prefix_messages.len() - 1)
+            } else {
+                None
+            };
+
             let req = Request {
                 model: self.model.clone(),
                 system: self.system.clone(),
@@ -282,6 +297,7 @@ impl Agent {
                 tools: tool_defs.clone(),
                 server_tools: self.server_tools.clone(),
                 max_tokens: self.max_tokens,
+                cache_breakpoint,
             };
 
             let provider_handle = {
@@ -490,6 +506,10 @@ impl Agent {
                     .await;
                 return Ok(messages);
             }
+
+            // Update parent_messages snapshot before tool execution,
+            // so sub-agents can inherit the current conversation for fork optimization.
+            *parent_messages.lock().await = messages.clone();
 
             // Execute tools and build tool result message.
             let mut tool_results = Vec::new();
@@ -719,6 +739,92 @@ mod tests {
                 false
             }
         })
+    }
+
+    #[tokio::test]
+    async fn prefix_messages_sent_to_provider() {
+        // Provider that reports how many messages it received.
+        struct MessageCountProvider;
+
+        #[async_trait]
+        impl Provider for MessageCountProvider {
+            async fn request(&self, req: Request, tx: mpsc::Sender<Chunk>) -> anyhow::Result<()> {
+                let count = req.messages.len();
+                let bp = req
+                    .cache_breakpoint
+                    .map(|i| i.to_string())
+                    .unwrap_or_else(|| "none".into());
+                let text = format!("messages:{count} cache_breakpoint:{bp}");
+                let _ = tx.send(Chunk::Text(text.clone())).await;
+                let _ = tx
+                    .send(Chunk::Done {
+                        stop_reason: StopReason::EndTurn,
+                        content: vec![ContentBlock::Text { text }],
+                    })
+                    .await;
+                Ok(())
+            }
+        }
+
+        let mut agent = make_agent(MessageCountProvider, ToolRegistry::new());
+        // Add 2 prefix messages (simulating parent conversation).
+        agent.prefix_messages = vec![
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text {
+                    text: "parent msg 1".into(),
+                }],
+            },
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Text {
+                    text: "parent reply".into(),
+                }],
+            },
+        ];
+
+        let (tx, rx) = mpsc::channel(64);
+        let handle = tokio::spawn(async move { collect_events(rx).await });
+        agent.run("sub-agent prompt".into(), tx).await.unwrap();
+        let events = handle.await.unwrap();
+
+        // 2 prefix + 1 new prompt = 3 messages.
+        assert!(has_assistant_with_text(&events, "messages:3"));
+        // cache_breakpoint should be at index 1 (last prefix message).
+        assert!(has_assistant_with_text(&events, "cache_breakpoint:1"));
+    }
+
+    #[tokio::test]
+    async fn no_prefix_no_cache_breakpoint() {
+        struct BreakpointCheckProvider;
+
+        #[async_trait]
+        impl Provider for BreakpointCheckProvider {
+            async fn request(&self, req: Request, tx: mpsc::Sender<Chunk>) -> anyhow::Result<()> {
+                let bp = req
+                    .cache_breakpoint
+                    .map(|i| i.to_string())
+                    .unwrap_or_else(|| "none".into());
+                let text = format!("cache_breakpoint:{bp}");
+                let _ = tx.send(Chunk::Text(text.clone())).await;
+                let _ = tx
+                    .send(Chunk::Done {
+                        stop_reason: StopReason::EndTurn,
+                        content: vec![ContentBlock::Text { text }],
+                    })
+                    .await;
+                Ok(())
+            }
+        }
+
+        let agent = make_agent(BreakpointCheckProvider, ToolRegistry::new());
+
+        let (tx, rx) = mpsc::channel(64);
+        let handle = tokio::spawn(async move { collect_events(rx).await });
+        agent.run("test".into(), tx).await.unwrap();
+        let events = handle.await.unwrap();
+
+        assert!(has_assistant_with_text(&events, "cache_breakpoint:none"));
     }
 
     #[tokio::test]

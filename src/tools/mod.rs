@@ -143,6 +143,9 @@ pub struct ToolContext {
     /// Completed sub-agents available for resumption via SendMessage.
     /// Keyed by agent_id. Agents with names are also findable by name.
     pub completed_agents: Arc<Mutex<HashMap<String, CompletedAgent>>>,
+    /// Parent agent's messages for fork optimization (prompt cache reuse).
+    /// Updated each iteration with the current conversation state.
+    pub parent_messages: Arc<Mutex<Vec<crate::message::Message>>>,
     /// Working directory for tool execution. If None, uses process CWD.
     pub cwd: Option<String>,
 }
@@ -337,6 +340,7 @@ pub(crate) fn dummy_context() -> ToolContext {
         background_handles: Arc::new(Mutex::new(Vec::new())),
         background_worktrees: Arc::new(Mutex::new(Vec::new())),
         completed_agents: Arc::new(Mutex::new(HashMap::new())),
+        parent_messages: Arc::new(Mutex::new(Vec::new())),
         cwd: None,
     }
 }

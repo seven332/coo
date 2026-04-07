@@ -344,6 +344,8 @@ impl Tool for AgentTool {
         agent.depth = context.depth + 1;
         agent.max_depth = context.max_depth;
         agent.cwd = worktree.as_ref().map(|wt| wt.path.clone());
+        // Fork optimization: inherit parent messages as prefix for prompt cache reuse.
+        agent.prefix_messages = context.parent_messages.lock().await.clone();
         let agent_cwd = agent.cwd.clone();
 
         let agent_id = agent.session_id.clone();
@@ -600,6 +602,7 @@ mod tests {
             background_handles: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             background_worktrees: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             completed_agents: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+            parent_messages: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             cwd: None,
         };
         (ctx, background_rx)
