@@ -20,10 +20,16 @@ struct Input {
     line_numbers: bool,
     #[serde(default)]
     case_insensitive: bool,
+    #[serde(default = "default_output_mode")]
+    output_mode: String,
 }
 
 fn default_true() -> bool {
     true
+}
+
+fn default_output_mode() -> String {
+    "files_with_matches".to_string()
 }
 
 #[async_trait]
@@ -60,6 +66,11 @@ impl Tool for GrepTool {
                 "case_insensitive": {
                     "type": "boolean",
                     "description": "Case insensitive search (default: false)"
+                },
+                "output_mode": {
+                    "type": "string",
+                    "enum": ["content", "files_with_matches", "count"],
+                    "description": "Output mode: \"content\" shows matching lines, \"files_with_matches\" shows only file paths (default), \"count\" shows match counts per file."
                 }
             },
             "required": ["pattern"]
@@ -71,6 +82,16 @@ impl Tool for GrepTool {
             Ok(v) => v,
             Err(e) => return ToolResult::error(format!("Invalid input: {e}")),
         };
+
+        if !matches!(
+            input.output_mode.as_str(),
+            "content" | "files_with_matches" | "count"
+        ) {
+            return ToolResult::error(format!(
+                "Unknown output_mode: {}. Use content, files_with_matches, or count.",
+                input.output_mode
+            ));
+        }
 
         let resolved = input
             .path
@@ -112,9 +133,21 @@ async fn run_rg(input: &Input, path: &str) -> Result<String, String> {
     let mut cmd = Command::new("rg");
     cmd.arg("--no-heading");
 
-    if input.line_numbers {
-        cmd.arg("-n");
+    match input.output_mode.as_str() {
+        "files_with_matches" => {
+            cmd.arg("-l");
+        }
+        "count" => {
+            cmd.arg("-c");
+        }
+        _ => {
+            // "content" mode: show matching lines.
+            if input.line_numbers {
+                cmd.arg("-n");
+            }
+        }
     }
+
     if input.case_insensitive {
         cmd.arg("-i");
     }
@@ -142,9 +175,20 @@ async fn run_grep(input: &Input, path: &str) -> Result<String, String> {
     let mut cmd = Command::new("grep");
     cmd.arg("-r").arg("-E");
 
-    if input.line_numbers {
-        cmd.arg("-n");
+    match input.output_mode.as_str() {
+        "files_with_matches" => {
+            cmd.arg("-l");
+        }
+        "count" => {
+            cmd.arg("-c");
+        }
+        _ => {
+            if input.line_numbers {
+                cmd.arg("-n");
+            }
+        }
     }
+
     if input.case_insensitive {
         cmd.arg("-i");
     }
@@ -195,7 +239,8 @@ mod tests {
             .call(
                 json!({
                     "pattern": "hello",
-                    "path": dir.path().join("test.txt").to_str().unwrap()
+                    "path": dir.path().join("test.txt").to_str().unwrap(),
+                    "output_mode": "content"
                 }),
                 &ctx,
             )
@@ -219,7 +264,8 @@ mod tests {
             .call(
                 json!({
                     "pattern": "match_me",
-                    "path": dir.path().to_str().unwrap()
+                    "path": dir.path().to_str().unwrap(),
+                    "output_mode": "content"
                 }),
                 &ctx,
             )
@@ -262,7 +308,8 @@ mod tests {
                 json!({
                     "pattern": "hello",
                     "path": dir.path().join("test.txt").to_str().unwrap(),
-                    "case_insensitive": true
+                    "case_insensitive": true,
+                    "output_mode": "content"
                 }),
                 &ctx,
             )
@@ -282,7 +329,8 @@ mod tests {
             .call(
                 json!({
                     "pattern": "bbb",
-                    "path": dir.path().join("test.txt").to_str().unwrap()
+                    "path": dir.path().join("test.txt").to_str().unwrap(),
+                    "output_mode": "content"
                 }),
                 &ctx,
             )
@@ -312,6 +360,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn files_with_matches_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "target line").unwrap();
+        fs::write(dir.path().join("b.txt"), "no match").unwrap();
+
+        let tool = GrepTool;
+        let ctx = crate::tools::dummy_context();
+        let result = tool
+            .call(
+                json!({
+                    "pattern": "target",
+                    "path": dir.path().to_str().unwrap()
+                }),
+                &ctx,
+            )
+            .await;
+        assert!(!result.is_error);
+        let text = text_of(&result);
+        assert!(text.contains("a.txt"));
+        assert!(!text.contains("b.txt"));
+        // Should not contain the matched line content.
+        assert!(!text.contains("target line"));
+    }
+
+    #[tokio::test]
+    async fn count_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("test.txt"), "aaa\nbbb\naaa").unwrap();
+
+        let tool = GrepTool;
+        let ctx = crate::tools::dummy_context();
+        let result = tool
+            .call(
+                json!({
+                    "pattern": "aaa",
+                    "path": dir.path().join("test.txt").to_str().unwrap(),
+                    "output_mode": "count"
+                }),
+                &ctx,
+            )
+            .await;
+        assert!(!result.is_error);
+        let text = text_of(&result);
+        assert!(text.contains("2"), "should show count of 2, got: {text}");
+    }
+
+    #[tokio::test]
+    async fn unknown_output_mode_rejected() {
+        let tool = GrepTool;
+        let ctx = crate::tools::dummy_context();
+        let result = tool
+            .call(json!({"pattern": "x", "output_mode": "invalid"}), &ctx)
+            .await;
+        assert!(result.is_error);
+        assert!(text_of(&result).contains("Unknown output_mode"));
+    }
+
+    #[tokio::test]
     async fn cwd_used_when_no_path() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("file.txt"), "findme here").unwrap();
@@ -322,6 +428,7 @@ mod tests {
         let result = tool.call(json!({"pattern": "findme"}), &ctx).await;
         assert!(!result.is_error);
         let text = text_of(&result);
-        assert!(text.contains("findme"));
+        // Default output_mode is files_with_matches, so result is file paths.
+        assert!(text.contains("file.txt"));
     }
 }
