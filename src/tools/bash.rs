@@ -12,6 +12,10 @@ pub struct BashTool;
 #[derive(Deserialize)]
 struct Input {
     command: String,
+    /// Metadata for the user/observer to understand the command's intent.
+    #[serde(default)]
+    #[allow(dead_code)]
+    description: Option<String>,
     #[serde(default = "default_timeout")]
     timeout: u64,
 }
@@ -37,6 +41,10 @@ impl Tool for BashTool {
                 "command": {
                     "type": "string",
                     "description": "The bash command to execute"
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Clear, concise description of what this command does in active voice. For simple commands (git, npm, standard CLI tools), keep it brief (5-10 words). For complex commands (piped commands, obscure flags), add enough context to clarify."
                 },
                 "timeout": {
                     "type": "integer",
