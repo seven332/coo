@@ -26,9 +26,10 @@ impl Tool for SendMessageTool {
     }
 
     fn description(&self) -> &str {
-        "Send a message to a previously spawned agent to continue its conversation. \
-         The agent resumes with its full context preserved. Use the agent's name or ID \
-         as the 'to' field."
+        "Send a message to a previously spawned agent. If the agent is currently running \
+         in the background, the message is queued for delivery at its next tool round. \
+         If the agent has completed, it is resumed with its full context preserved. \
+         Use the agent's name or ID as the 'to' field."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -59,15 +60,16 @@ impl Tool for SendMessageTool {
         }
 
         // Resolve agent ID: check running agents first, then completed agents.
-        let resolved_id = {
-            let running = context.running_agents.lock().await;
-            if running.contains(&input.to) {
-                Some(input.to.clone())
-            } else {
-                // Try name registry for running background agents.
-                let registry = context.agent_name_registry.lock().await;
-                registry.get(&input.to).cloned()
-            }
+        let resolved_id = if context.running_agents.lock().await.contains(&input.to) {
+            Some(input.to.clone())
+        } else {
+            // Try name registry for running background agents.
+            context
+                .agent_name_registry
+                .lock()
+                .await
+                .get(&input.to)
+                .cloned()
         };
 
         // If the agent is currently running, queue the message for delivery.

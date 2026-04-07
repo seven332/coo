@@ -356,6 +356,8 @@ impl Tool for AgentTool {
         agent.cwd = worktree.as_ref().map(|wt| wt.path.clone());
         // Fork optimization: inherit parent messages as prefix for prompt cache reuse.
         agent.prefix_messages = context.parent_messages.lock().await.clone();
+        // Share parent's pending_messages so SendMessage can queue messages to this agent.
+        agent.pending_messages = Some(context.pending_messages.clone());
         let agent_cwd = agent.cwd.clone();
 
         let agent_id = agent.session_id.clone();

@@ -15,6 +15,9 @@ pub const DEFAULT_MAX_TOKENS: u32 = 32000;
 pub const DEFAULT_MAX_ITERATIONS: usize = 100;
 pub const DEFAULT_MAX_DEPTH: usize = 5;
 
+/// Shared map of agent_id → queued messages, used by SendMessage to deliver to running agents.
+pub type PendingMessagesMap = Arc<tokio::sync::Mutex<HashMap<String, Vec<String>>>>;
+
 pub struct Agent {
     provider: Arc<dyn Provider>,
     tools: Arc<ToolRegistry>,
@@ -30,6 +33,9 @@ pub struct Agent {
     /// Messages to prepend before the prompt (for fork optimization / prompt cache reuse).
     /// The cache_breakpoint is automatically set to the last prefix message.
     pub prefix_messages: Vec<Message>,
+    /// Shared pending messages map from the parent, for receiving queued messages via SendMessage.
+    /// If None, a fresh map is created in run_loop (typical for top-level agents).
+    pub pending_messages: Option<PendingMessagesMap>,
 }
 
 impl Agent {
@@ -52,6 +58,7 @@ impl Agent {
             session_id: new_uuid(),
             cwd: None,
             prefix_messages: Vec::new(),
+            pending_messages: None,
         }
     }
 
@@ -243,9 +250,11 @@ impl Agent {
         let running_agents = Arc::new(tokio::sync::Mutex::new(HashSet::<String>::new()));
         let agent_name_registry =
             Arc::new(tokio::sync::Mutex::new(HashMap::<String, String>::new()));
-        let pending_messages = Arc::new(tokio::sync::Mutex::new(
-            HashMap::<String, Vec<String>>::new(),
-        ));
+        let pending_messages = self.pending_messages.clone().unwrap_or_else(|| {
+            Arc::new(tokio::sync::Mutex::new(
+                HashMap::<String, Vec<String>>::new(),
+            ))
+        });
         let parent_messages = Arc::new(tokio::sync::Mutex::new(Vec::new()));
 
         let tool_context = ToolContext {
