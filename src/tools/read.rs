@@ -168,6 +168,15 @@ impl Tool for ReadTool {
                     return ToolResult::error(format!("Failed to read {}: {e}", path.display()));
                 }
             };
+            // Reject PDFs larger than 100 MB to prevent excessive memory usage during parsing.
+            const MAX_PDF_BYTES: usize = 100 * 1024 * 1024;
+            if bytes.len() > MAX_PDF_BYTES {
+                return ToolResult::error(format!(
+                    "PDF too large ({} bytes, max {})",
+                    bytes.len(),
+                    MAX_PDF_BYTES
+                ));
+            }
             // pdf-extract is synchronous; run on blocking thread pool.
             let result = tokio::task::spawn_blocking(move || {
                 pdf_extract::extract_text_from_mem_by_pages(&bytes)
