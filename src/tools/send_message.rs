@@ -59,39 +59,42 @@ impl Tool for SendMessageTool {
             return ToolResult::error(format!("Max agent depth {} reached", context.max_depth));
         }
 
-        // Resolve agent ID: check running agents first, then completed agents.
-        let resolved_id = if context.running_agents.lock().await.contains(&input.to) {
-            Some(input.to.clone())
-        } else {
-            // Try name registry for running background agents.
-            context
-                .agent_name_registry
-                .lock()
-                .await
-                .get(&input.to)
-                .cloned()
-        };
-
-        // If the agent is currently running, queue the message for delivery.
-        if let Some(ref agent_id) = resolved_id
-            && context.running_agents.lock().await.contains(agent_id)
+        // Resolve agent ID and queue if running — hold running_agents lock through
+        // the entire check+queue to prevent race with background agent deregister+drain.
         {
-            info!(
-                agent_id,
-                to = input.to,
-                "Queueing message for running agent"
-            );
-            context
-                .pending_messages
-                .lock()
-                .await
-                .entry(agent_id.clone())
-                .or_default()
-                .push(input.message);
-            return ToolResult::success(format!(
-                "Message queued for delivery to '{}' at its next tool round.\nagentId: {agent_id}",
-                input.to
-            ));
+            let running = context.running_agents.lock().await;
+            let resolved_id = if running.contains(&input.to) {
+                Some(input.to.clone())
+            } else {
+                // Try name registry for running background agents.
+                context
+                    .agent_name_registry
+                    .lock()
+                    .await
+                    .get(&input.to)
+                    .cloned()
+            };
+
+            if let Some(ref agent_id) = resolved_id
+                && running.contains(agent_id)
+            {
+                info!(
+                    agent_id,
+                    to = input.to,
+                    "Queueing message for running agent"
+                );
+                context
+                    .pending_messages
+                    .lock()
+                    .await
+                    .entry(agent_id.clone())
+                    .or_default()
+                    .push(input.message);
+                return ToolResult::success(format!(
+                    "Message queued for delivery to '{}' at its next tool round.\nagentId: {agent_id}",
+                    input.to
+                ));
+            }
         }
 
         // Agent is not running — try to resume from completed agents.

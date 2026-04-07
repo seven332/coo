@@ -466,38 +466,45 @@ impl Tool for AgentTool {
                     bg_worktrees.lock().await.retain(|w| w.path != *path);
                 }
 
-                // Deregister from running agents.
-                bg_running_agents.lock().await.remove(&bg_agent_id);
-                if let Some(ref name) = bg_agent_name {
-                    bg_name_registry.lock().await.remove(name);
-                }
-                // Drain any messages queued after the agent loop exited (race window).
-                let orphaned_msgs = bg_pending_messages
-                    .lock()
-                    .await
-                    .remove(&bg_agent_id)
-                    .unwrap_or_default();
-                if !orphaned_msgs.is_empty() {
-                    let count = orphaned_msgs.len();
-                    result.push_str(&format!(
-                        "\n({count} queued message(s) arrived after agent finished: {})",
-                        orphaned_msgs.join(" | ")
-                    ));
-                }
-                // Store as completed for resumption via SendMessage.
-                if let Some(msgs) = agent_messages {
-                    bg_completed_agents.lock().await.insert(
-                        bg_agent_id.clone(),
-                        super::CompletedAgent {
-                            agent_id: bg_agent_id.clone(),
-                            name: bg_agent_name,
-                            messages: msgs,
-                            model: bg_model,
-                            system: bg_system,
-                            tools: bg_tools,
-                            cwd: bg_cwd,
-                        },
-                    );
+                // Deregister, drain orphaned messages, and store as completed — all while
+                // holding running_agents lock to prevent SendMessage from queueing to a
+                // deregistered agent (lock ordering: running_agents → pending_messages).
+                {
+                    let mut running = bg_running_agents.lock().await;
+                    running.remove(&bg_agent_id);
+                    if let Some(ref name) = bg_agent_name {
+                        bg_name_registry.lock().await.remove(name);
+                    }
+                    // Drain any messages queued after the agent loop exited.
+                    let orphaned_msgs = bg_pending_messages
+                        .lock()
+                        .await
+                        .remove(&bg_agent_id)
+                        .unwrap_or_default();
+                    if !orphaned_msgs.is_empty() {
+                        let count = orphaned_msgs.len();
+                        result.push_str(&format!(
+                            "\n({count} queued message(s) arrived after agent finished: {})",
+                            orphaned_msgs.join(" | ")
+                        ));
+                    }
+                    // Store as completed for resumption via SendMessage.
+                    // Done under the same lock so there's no window where the agent is
+                    // neither running nor completed (fixes "agent not found" race).
+                    if let Some(msgs) = agent_messages {
+                        bg_completed_agents.lock().await.insert(
+                            bg_agent_id.clone(),
+                            super::CompletedAgent {
+                                agent_id: bg_agent_id.clone(),
+                                name: bg_agent_name,
+                                messages: msgs,
+                                model: bg_model,
+                                system: bg_system,
+                                tools: bg_tools,
+                                cwd: bg_cwd,
+                            },
+                        );
+                    }
                 }
 
                 let _ = background_tx
