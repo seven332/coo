@@ -22,7 +22,11 @@ impl Tool for GlobTool {
     }
 
     fn description(&self) -> &str {
-        "Find files matching a glob pattern. Returns matching file paths, one per line."
+        "Fast file pattern matching tool. Returns matching file paths sorted by \
+         modification time (most recent first).\n\n\
+         - Supports glob patterns like \"**/*.rs\" or \"src/**/*.ts\".\n\
+         - Use this when you need to find files by name or extension.\n\
+         - For searching file contents, use grep instead."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -35,7 +39,7 @@ impl Tool for GlobTool {
                 },
                 "path": {
                     "type": "string",
-                    "description": "Directory to search in (default: current directory)"
+                    "description": "Directory to search in. Omit to use the current working directory."
                 }
             },
             "required": ["pattern"]
@@ -67,13 +71,27 @@ impl Tool for GlobTool {
             Err(e) => return ToolResult::error(format!("Invalid glob pattern: {e}")),
         };
 
-        let mut matches: Vec<String> = Vec::new();
+        let mut entries: Vec<(std::path::PathBuf, std::time::SystemTime)> = Vec::new();
+        let mut errors: Vec<String> = Vec::new();
         for entry in paths {
             match entry {
-                Ok(path) => matches.push(path.display().to_string()),
-                Err(e) => matches.push(format!("(error: {e})")),
+                Ok(path) => {
+                    let mtime = std::fs::metadata(&path)
+                        .and_then(|m| m.modified())
+                        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                    entries.push((path, mtime));
+                }
+                Err(e) => errors.push(format!("(error: {e})")),
             }
         }
+        // Sort by modification time, most recent first.
+        entries.sort_by(|a, b| b.1.cmp(&a.1));
+
+        let mut matches: Vec<String> = entries
+            .into_iter()
+            .map(|(p, _)| p.display().to_string())
+            .collect();
+        matches.extend(errors);
 
         if matches.is_empty() {
             ToolResult::success("No matches found.")
