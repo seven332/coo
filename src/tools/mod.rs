@@ -96,6 +96,16 @@ pub(crate) fn git_cmd() -> tokio::process::Command {
     cmd
 }
 
+/// Decrements an atomic counter on drop, ensuring the count is accurate
+/// even if the owning task panics before reaching the explicit decrement.
+pub(crate) struct PendingGuard(pub(crate) Arc<AtomicUsize>);
+
+impl Drop for PendingGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 /// Result from a background agent that has completed.
 pub struct BackgroundAgentResult {
     pub agent_id: String,
