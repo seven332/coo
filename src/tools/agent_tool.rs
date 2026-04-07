@@ -17,7 +17,7 @@ pub struct AgentTool;
 
 /// Aborts the associated task when dropped.
 /// Ensures inner spawned tasks are cleaned up if the outer task is cancelled.
-struct AbortOnDrop(tokio::task::AbortHandle);
+pub(crate) struct AbortOnDrop(pub(crate) tokio::task::AbortHandle);
 
 impl Drop for AbortOnDrop {
     fn drop(&mut self) {
@@ -161,6 +161,8 @@ struct Input {
     #[serde(default)]
     description: Option<String>,
     #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
     model: Option<String>,
     #[serde(default)]
     system: Option<String>,
@@ -172,54 +174,7 @@ struct Input {
     subagent_type: Option<String>,
 }
 
-/// Collect text output, token usage, tool use count, and error status from agent events.
-/// Returns (output, total_tokens, tool_use_count, had_error).
-async fn collect_agent_output(
-    event_rx: &mut mpsc::Receiver<StreamEvent>,
-) -> (String, u64, usize, bool) {
-    let mut output = String::new();
-    let mut total_tokens = 0u64;
-    let mut tool_use_count = 0usize;
-    let mut had_error = false;
-
-    while let Some(event) = event_rx.recv().await {
-        match event {
-            StreamEvent::Assistant { ref message, .. } => {
-                if let Some(content) = message.get("content").and_then(|c| c.as_array()) {
-                    for block in content {
-                        if block.get("type").and_then(|t| t.as_str()) == Some("text")
-                            && let Some(text) = block.get("text").and_then(|t| t.as_str())
-                        {
-                            output.push_str(text);
-                        }
-                        if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
-                            tool_use_count += 1;
-                        }
-                    }
-                }
-                if let Some(usage) = message.get("usage") {
-                    if let Some(input_t) = usage.get("input_tokens").and_then(|v| v.as_u64()) {
-                        total_tokens += input_t;
-                    }
-                    if let Some(output_t) = usage.get("output_tokens").and_then(|v| v.as_u64()) {
-                        total_tokens += output_t;
-                    }
-                }
-            }
-            StreamEvent::Result {
-                is_error: true,
-                subtype,
-                ..
-            } => {
-                had_error = true;
-                output = subtype;
-            }
-            _ => {}
-        }
-    }
-
-    (output, total_tokens, tool_use_count, had_error)
-}
+use super::collect_agent_output;
 
 #[async_trait]
 impl Tool for AgentTool {
@@ -273,6 +228,10 @@ impl Tool for AgentTool {
                 "description": {
                     "type": "string",
                     "description": "A short (3-5 word) description of the task"
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Optional name for the agent. Used to reference the agent later via SendMessage. If omitted, the agent can still be referenced by its ID."
                 },
                 "model": {
                     "type": "string",
@@ -373,12 +332,19 @@ impl Tool for AgentTool {
             context.tools.clone()
         };
 
-        let mut agent = Agent::new(context.provider.clone(), tools, model, system);
+        let agent_name = input.name.clone();
+        let mut agent = Agent::new(
+            context.provider.clone(),
+            tools.clone(),
+            model.clone(),
+            system.clone(),
+        );
         agent.max_tokens = context.max_tokens;
         agent.max_iterations = context.max_iterations;
         agent.depth = context.depth + 1;
         agent.max_depth = context.max_depth;
         agent.cwd = worktree.as_ref().map(|wt| wt.path.clone());
+        let agent_cwd = agent.cwd.clone();
 
         let agent_id = agent.session_id.clone();
         let subagent_type_name = agent_type.map(|t| t.name).unwrap_or("general-purpose");
@@ -434,18 +400,18 @@ impl Tool for AgentTool {
 
                 let duration_ms = start.elapsed().as_millis() as u64;
 
-                let (mut result, is_error) = match handle.await {
-                    Ok(Ok(())) if !had_error => {
+                let (mut result, is_error, _agent_messages) = match handle.await {
+                    Ok(Ok(msgs)) if !had_error => {
                         let text = if output.is_empty() {
                             "(sub-agent produced no text output)".to_string()
                         } else {
                             output
                         };
-                        (text, false)
+                        (text, false, Some(msgs))
                     }
-                    Ok(Ok(())) => (output, true),
-                    Ok(Err(e)) => (format!("Sub-agent failed: {e}"), true),
-                    Err(e) => (format!("Sub-agent panicked: {e}"), true),
+                    Ok(Ok(_)) => (output, true, None),
+                    Ok(Err(e)) => (format!("Sub-agent failed: {e}"), true, None),
+                    Err(e) => (format!("Sub-agent panicked: {e}"), true, None),
                 };
 
                 // Handle worktree cleanup.
@@ -466,6 +432,10 @@ impl Tool for AgentTool {
                 if let Some(ref path) = wt_path_for_removal {
                     bg_worktrees.lock().await.retain(|w| w.path != *path);
                 }
+
+                // Note: background agents don't store in completed_agents for now,
+                // since they lack access to the agent's config after the spawn.
+                // This could be added later if needed.
 
                 let _ = background_tx
                     .send(BackgroundAgentResult {
@@ -509,17 +479,17 @@ impl Tool for AgentTool {
                 return ToolResult::error(format!("Sub-agent error: {output}"));
             }
 
-            let agent_result = match handle.await {
-                Ok(Ok(())) => {
+            let (agent_result, agent_messages) = match handle.await {
+                Ok(Ok(msgs)) => {
                     let text = if output.is_empty() {
                         "(sub-agent produced no text output)".to_string()
                     } else {
                         output
                     };
-                    Ok(text)
+                    (Ok(text), Some(msgs))
                 }
-                Ok(Err(e)) => Err(format!("Sub-agent failed: {e}")),
-                Err(e) => Err(format!("Sub-agent panicked: {e}")),
+                Ok(Err(e)) => (Err(format!("Sub-agent failed: {e}")), None),
+                Err(e) => (Err(format!("Sub-agent panicked: {e}")), None),
             };
 
             // Handle worktree cleanup.
@@ -541,9 +511,28 @@ impl Tool for AgentTool {
 
             match agent_result {
                 Ok(text) => {
+                    // Store completed agent for potential resumption via SendMessage.
+                    if let Some(msgs) = agent_messages {
+                        let completed = super::CompletedAgent {
+                            agent_id: agent_id.clone(),
+                            name: agent_name.clone(),
+                            messages: msgs,
+                            model: model.clone(),
+                            system: system.clone(),
+                            tools: tools.clone(),
+                            cwd: agent_cwd,
+                        };
+                        let mut agents = context.completed_agents.lock().await;
+                        agents.insert(agent_id.clone(), completed);
+                    }
+
+                    let name_info = agent_name
+                        .as_deref()
+                        .map(|n| format!("\nagentName: {n}"))
+                        .unwrap_or_default();
                     let wt_info = worktree_info.unwrap_or_default();
                     let result = format!(
-                        "{text}\nagentId: {agent_id} (use SendMessage with to: '{agent_id}' to continue this agent)\n<usage>\ntotal_tokens: {total_tokens}\ntool_uses: {tool_use_count}\nduration_ms: {duration_ms}\n</usage>{wt_info}"
+                        "{text}\nagentId: {agent_id}{name_info}\n<usage>\ntotal_tokens: {total_tokens}\ntool_uses: {tool_use_count}\nduration_ms: {duration_ms}\n</usage>{wt_info}"
                     );
                     ToolResult::success(result)
                 }
@@ -610,6 +599,7 @@ mod tests {
             pending_background: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             background_handles: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             background_worktrees: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            completed_agents: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
             cwd: None,
         };
         (ctx, background_rx)

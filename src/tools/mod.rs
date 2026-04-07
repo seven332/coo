@@ -4,6 +4,7 @@ mod edit;
 mod glob;
 mod grep;
 mod read;
+mod send_message;
 mod web_fetch;
 mod write;
 
@@ -13,9 +14,11 @@ pub use edit::EditTool;
 pub use glob::GlobTool;
 pub use grep::GrepTool;
 pub use read::ReadTool;
+pub use send_message::SendMessageTool;
 pub use web_fetch::WebFetchTool;
 pub use write::WriteTool;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 
@@ -23,8 +26,58 @@ use async_trait::async_trait;
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 
-use crate::message::ToolResult;
+use crate::message::{StreamEvent, ToolResult};
 use crate::provider::{Provider, ToolDefinition};
+
+/// Collect text output, token usage, tool use count, and error status from agent events.
+/// Returns (output, total_tokens, tool_use_count, had_error).
+/// Shared by AgentTool and SendMessageTool.
+pub(crate) async fn collect_agent_output(
+    event_rx: &mut mpsc::Receiver<StreamEvent>,
+) -> (String, u64, usize, bool) {
+    let mut output = String::new();
+    let mut total_tokens = 0u64;
+    let mut tool_use_count = 0usize;
+    let mut had_error = false;
+
+    while let Some(event) = event_rx.recv().await {
+        match event {
+            StreamEvent::Assistant { ref message, .. } => {
+                if let Some(content) = message.get("content").and_then(|c| c.as_array()) {
+                    for block in content {
+                        if block.get("type").and_then(|t| t.as_str()) == Some("text")
+                            && let Some(text) = block.get("text").and_then(|t| t.as_str())
+                        {
+                            output.push_str(text);
+                        }
+                        if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
+                            tool_use_count += 1;
+                        }
+                    }
+                }
+                if let Some(usage) = message.get("usage") {
+                    if let Some(input_t) = usage.get("input_tokens").and_then(|v| v.as_u64()) {
+                        total_tokens += input_t;
+                    }
+                    if let Some(output_t) = usage.get("output_tokens").and_then(|v| v.as_u64()) {
+                        total_tokens += output_t;
+                    }
+                }
+            }
+            StreamEvent::Result {
+                is_error: true,
+                subtype,
+                ..
+            } => {
+                had_error = true;
+                output = subtype;
+            }
+            _ => {}
+        }
+    }
+
+    (output, total_tokens, tool_use_count, had_error)
+}
 
 /// Create a git Command with inherited git env vars removed.
 /// Prevents lefthook/pre-commit GIT_DIR, GIT_INDEX_FILE, etc.
@@ -54,6 +107,17 @@ pub struct BackgroundAgentResult {
     pub tool_use_count: usize,
 }
 
+/// State of a completed sub-agent, stored for resumption via SendMessage.
+pub struct CompletedAgent {
+    pub agent_id: String,
+    pub name: Option<String>,
+    pub messages: Vec<crate::message::Message>,
+    pub model: String,
+    pub system: String,
+    pub tools: Arc<ToolRegistry>,
+    pub cwd: Option<String>,
+}
+
 /// Info needed to clean up an orphaned worktree.
 pub struct WorktreeInfo {
     pub path: String,
@@ -76,6 +140,9 @@ pub struct ToolContext {
     pub background_handles: Arc<Mutex<Vec<JoinHandle<()>>>>,
     /// Worktrees created by background agents, for cleanup on abort.
     pub background_worktrees: Arc<Mutex<Vec<WorktreeInfo>>>,
+    /// Completed sub-agents available for resumption via SendMessage.
+    /// Keyed by agent_id. Agents with names are also findable by name.
+    pub completed_agents: Arc<Mutex<HashMap<String, CompletedAgent>>>,
     /// Working directory for tool execution. If None, uses process CWD.
     pub cwd: Option<String>,
 }
@@ -145,6 +212,7 @@ impl ToolRegistry {
         reg.register(Box::new(GlobTool));
         reg.register(Box::new(GrepTool));
         reg.register(Box::new(ReadTool));
+        reg.register(Box::new(SendMessageTool));
         reg.register(Box::new(WebFetchTool::new()));
         reg.register(Box::new(WriteTool));
         reg
@@ -187,6 +255,7 @@ fn create_tool_by_name(name: &str) -> Option<Box<dyn Tool>> {
         "glob" => Some(Box::new(GlobTool)),
         "grep" => Some(Box::new(GrepTool)),
         "read" => Some(Box::new(ReadTool)),
+        "send_message" => Some(Box::new(SendMessageTool)),
         "web_fetch" => Some(Box::new(WebFetchTool::new())),
         "write" => Some(Box::new(WriteTool)),
         _ => None,
@@ -267,6 +336,7 @@ pub(crate) fn dummy_context() -> ToolContext {
         pending_background: Arc::new(AtomicUsize::new(0)),
         background_handles: Arc::new(Mutex::new(Vec::new())),
         background_worktrees: Arc::new(Mutex::new(Vec::new())),
+        completed_agents: Arc::new(Mutex::new(HashMap::new())),
         cwd: None,
     }
 }
@@ -284,6 +354,7 @@ mod tests {
         assert!(reg.get("glob").is_some());
         assert!(reg.get("grep").is_some());
         assert!(reg.get("read").is_some());
+        assert!(reg.get("send_message").is_some());
         assert!(reg.get("web_fetch").is_some());
         assert!(reg.get("write").is_some());
         assert!(reg.get("nonexistent").is_none());
@@ -293,7 +364,7 @@ mod tests {
     fn definitions_match_tools() {
         let reg = ToolRegistry::with_defaults();
         let defs = reg.definitions();
-        assert_eq!(defs.len(), 8);
+        assert_eq!(defs.len(), 9);
         let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
         assert!(names.contains(&"agent"));
         assert!(names.contains(&"bash"));
@@ -301,6 +372,7 @@ mod tests {
         assert!(names.contains(&"glob"));
         assert!(names.contains(&"grep"));
         assert!(names.contains(&"read"));
+        assert!(names.contains(&"send_message"));
         assert!(names.contains(&"web_fetch"));
         assert!(names.contains(&"write"));
     }

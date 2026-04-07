@@ -6,5 +6,5 @@
 - [x] `run_in_background` — async execution, don't block parent agent
 - [x] `isolation: worktree` — git worktree isolation for safe parallel file modifications
 - [x] `subagent_type` — agent type system (Explore, Plan, custom agents)
-- [ ] `name` + SendMessage — named agents, resumable conversations
+- [x] `name` + SendMessage — named agents, resumable conversations
 - [ ] Fork optimization — inherit parent context for prompt cache reuse

@@ -162,15 +162,12 @@ impl Agent {
         }
     }
 
-    /// Run the agent loop. Streams events to `event_tx`.
-    /// Takes an initial user prompt and runs until completion.
+    /// Run the agent loop with a fresh prompt. Returns the conversation messages.
     pub async fn run(
         &self,
         prompt: String,
         event_tx: mpsc::Sender<StreamEvent>,
-    ) -> anyhow::Result<()> {
-        let start = Instant::now();
-
+    ) -> anyhow::Result<Vec<Message>> {
         let user_msg = Message {
             role: Role::User,
             content: vec![ContentBlock::Text { text: prompt }],
@@ -187,13 +184,55 @@ impl Agent {
             })
             .await;
 
-        let mut messages = vec![user_msg];
+        let messages = vec![user_msg];
+        self.run_loop(messages, event_tx).await
+    }
+
+    /// Resume the agent with existing conversation history plus a new message.
+    pub async fn resume(
+        &self,
+        mut messages: Vec<Message>,
+        new_message: String,
+        event_tx: mpsc::Sender<StreamEvent>,
+    ) -> anyhow::Result<Vec<Message>> {
+        let user_msg = Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text { text: new_message }],
+        };
+
+        let (sid, uid) = self.event_meta();
+        let _ = event_tx
+            .send(StreamEvent::User {
+                message: user_msg.clone(),
+                parent_tool_use_id: json!(null),
+                session_id: sid,
+                uuid: uid,
+            })
+            .await;
+
+        messages.push(user_msg);
+        self.run_loop(messages, event_tx).await
+    }
+
+    /// Core agent loop shared by run() and resume().
+    async fn run_loop(
+        &self,
+        initial_messages: Vec<Message>,
+        event_tx: mpsc::Sender<StreamEvent>,
+    ) -> anyhow::Result<Vec<Message>> {
+        let start = Instant::now();
+
+        let mut messages = initial_messages;
         let tool_defs = self.tools.definitions();
 
         let (background_tx, mut background_rx) = mpsc::channel::<BackgroundAgentResult>(16);
         let pending_background = Arc::new(AtomicUsize::new(0));
         let background_handles = Arc::new(tokio::sync::Mutex::new(Vec::new()));
         let background_worktrees = Arc::new(tokio::sync::Mutex::new(Vec::<WorktreeInfo>::new()));
+        let completed_agents = Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::<
+            String,
+            crate::tools::CompletedAgent,
+        >::new()));
 
         let tool_context = ToolContext {
             provider: self.provider.clone(),
@@ -208,6 +247,7 @@ impl Agent {
             pending_background: pending_background.clone(),
             background_handles: background_handles.clone(),
             background_worktrees: background_worktrees.clone(),
+            completed_agents,
             cwd: self.cwd.clone(),
         };
 
@@ -448,7 +488,7 @@ impl Agent {
                         uuid: uid,
                     })
                     .await;
-                return Ok(());
+                return Ok(messages);
             }
 
             // Execute tools and build tool result message.
@@ -508,7 +548,7 @@ impl Agent {
                 uuid: uid,
             })
             .await;
-        Ok(())
+        Ok(messages)
     }
 }
 
