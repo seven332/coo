@@ -407,6 +407,25 @@ mod tests {
         assert!(text.contains("content here"));
     }
 
+    #[tokio::test]
+    async fn read_text_file_ignores_pages_param() {
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        writeln!(tmp, "hello").unwrap();
+
+        let tool = ReadTool;
+        let ctx = crate::tools::dummy_context();
+        let result = tool
+            .call(
+                json!({"file_path": tmp.path().to_str().unwrap(), "pages": "1"}),
+                &ctx,
+            )
+            .await;
+        // `pages` is silently ignored for non-PDF files.
+        assert!(!result.is_error);
+        let text = text_of(&result);
+        assert!(text.contains("hello"));
+    }
+
     // --- parse_pages tests ---
 
     #[test]
@@ -464,6 +483,18 @@ mod tests {
     #[test]
     fn parse_pages_empty() {
         assert!(parse_pages("", 10).is_err());
+    }
+
+    #[test]
+    fn parse_pages_trailing_comma() {
+        assert!(parse_pages("1,", 10).is_err());
+    }
+
+    #[test]
+    fn parse_pages_single_page_range() {
+        // "3-3" is a valid range that selects one page.
+        let result = parse_pages("3-3", 10).unwrap();
+        assert_eq!(result, vec![2]);
     }
 
     // --- PDF read tests ---
