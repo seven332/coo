@@ -21,7 +21,12 @@ impl Tool for WriteTool {
     }
 
     fn description(&self) -> &str {
-        "Write content to a file. Creates the file if it doesn't exist, overwrites if it does."
+        "Write content to a file. Creates the file if it doesn't exist, overwrites if it does.\n\n\
+         - If the file already exists, you MUST read it first before writing. \
+         This tool will overwrite the entire file content.\n\
+         - Prefer the edit tool for modifying existing files — it only sends the diff. \
+         Only use this tool to create new files or for complete rewrites.\n\
+         - Creates parent directories automatically if they don't exist."
     }
 
     fn input_schema(&self) -> serde_json::Value {
