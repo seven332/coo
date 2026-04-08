@@ -563,7 +563,7 @@ impl Agent {
                     async move {
                         info!(tool = %name, "Executing tool");
                         let result = match tools.get(&name) {
-                            Some(tool) => tool.call(input.clone(), &ctx).await,
+                            Some(tool) => tool.call(input, &ctx).await,
                             None => {
                                 warn!(tool = %name, "Unknown tool");
                                 crate::message::ToolResult::error(format!("Unknown tool: {name}"))
