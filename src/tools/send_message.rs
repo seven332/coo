@@ -537,6 +537,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stale_name_registry_falls_through_to_completed() {
+        // name_registry has an entry but the agent is NOT in running_agents.
+        // This simulates a stale registry entry. SendMessage should NOT queue;
+        // it should fall through and resume the completed agent instead.
+        let provider: Arc<dyn Provider> = Arc::new(EchoProvider);
+        let ctx = make_context(provider);
+
+        // Create a completed agent with a name.
+        let agent_tool = super::super::AgentTool;
+        let result = agent_tool
+            .call(json!({"prompt": "task", "name": "stale-worker"}), &ctx)
+            .await;
+        assert!(!result.is_error);
+
+        // Add a stale name registry entry (agent is completed, not running).
+        let agent_id = {
+            let agents = ctx.completed_agents.lock().await;
+            agents
+                .iter()
+                .find(|(_, a)| a.name.as_deref() == Some("stale-worker"))
+                .map(|(k, _)| k.clone())
+                .unwrap()
+        };
+        ctx.agent_name_registry
+            .lock()
+            .await
+            .insert("stale-worker".into(), agent_id.clone());
+        // Note: agent_id is NOT in running_agents.
+
+        // SendMessage should resume (not queue).
+        let tool = SendMessageTool;
+        let result = tool
+            .call(json!({"to": "stale-worker", "message": "follow up"}), &ctx)
+            .await;
+        assert!(!result.is_error);
+        let text = match &result.content[0] {
+            ToolResultContent::Text { text } => text.as_str(),
+            _ => panic!("expected text"),
+        };
+        // Should be a resume result, not a "queued" result.
+        assert!(!text.contains("queued"));
+        assert!(text.contains("agentId:"));
+
+        // pending_messages should be empty — nothing was queued.
+        let pm = ctx.pending_messages.lock().await;
+        assert!(pm.get(&agent_id).is_none());
+    }
+
+    #[tokio::test]
     async fn multiple_queued_messages() {
         let provider: Arc<dyn Provider> = Arc::new(EchoProvider);
         let ctx = make_context(provider);
