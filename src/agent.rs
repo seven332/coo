@@ -464,6 +464,12 @@ impl Agent {
                 .await;
             messages.push(assistant_msg);
 
+            // MaxTokens: continue the conversation to get the rest of the output.
+            if stop_reason == StopReason::MaxTokens {
+                info!("Response truncated (max_tokens) — continuing");
+                continue;
+            }
+
             // If no tool use, check if we can exit or need to wait for background agents.
             if stop_reason != StopReason::ToolUse || tool_uses.is_empty() {
                 let msg_count_before = messages.len();
@@ -530,24 +536,30 @@ impl Agent {
             // so sub-agents can inherit the current conversation for fork optimization.
             *parent_messages.lock().await = messages.clone();
 
-            // Execute tools and build tool result message.
-            let mut tool_results = Vec::new();
-            for (id, name, input) in tool_uses {
-                info!(tool = %name, "Executing tool");
-                let result = match self.tools.get(&name) {
-                    Some(tool) => tool.call(input.clone(), &tool_context).await,
-                    None => {
-                        warn!(tool = %name, "Unknown tool");
-                        crate::message::ToolResult::error(format!("Unknown tool: {name}"))
+            // Execute tools in parallel and build tool result message.
+            let tool_futures: Vec<_> = tool_uses
+                .into_iter()
+                .map(|(id, name, input)| {
+                    let tools = self.tools.clone();
+                    let ctx = tool_context.clone();
+                    async move {
+                        info!(tool = %name, "Executing tool");
+                        let result = match tools.get(&name) {
+                            Some(tool) => tool.call(input.clone(), &ctx).await,
+                            None => {
+                                warn!(tool = %name, "Unknown tool");
+                                crate::message::ToolResult::error(format!("Unknown tool: {name}"))
+                            }
+                        };
+                        ContentBlock::ToolResult {
+                            tool_use_id: id,
+                            content: result.content,
+                            is_error: if result.is_error { Some(true) } else { None },
+                        }
                     }
-                };
-
-                tool_results.push(ContentBlock::ToolResult {
-                    tool_use_id: id,
-                    content: result.content,
-                    is_error: if result.is_error { Some(true) } else { None },
-                });
-            }
+                })
+                .collect();
+            let tool_results = futures::future::join_all(tool_futures).await;
 
             // Add tool results as user message and emit event.
             let tool_result_msg = Message {
@@ -1527,5 +1539,186 @@ mod tests {
             has_result(&events, "error_max_turns"),
             "should hit max iterations"
         );
+    }
+
+    #[tokio::test]
+    async fn max_tokens_continues_conversation() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // Provider that returns MaxTokens on first call, then EndTurn on second.
+        struct MaxTokensProvider {
+            call_count: AtomicUsize,
+        }
+
+        #[async_trait]
+        impl Provider for MaxTokensProvider {
+            async fn request(&self, _req: Request, tx: mpsc::Sender<Chunk>) -> anyhow::Result<()> {
+                let n = self.call_count.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    // First call: truncated response.
+                    let _ = tx.send(Chunk::Text("partial".into())).await;
+                    let _ = tx
+                        .send(Chunk::Done {
+                            stop_reason: StopReason::MaxTokens,
+                            content: vec![ContentBlock::Text {
+                                text: "partial".into(),
+                            }],
+                        })
+                        .await;
+                } else {
+                    // Second call: complete response.
+                    let _ = tx.send(Chunk::Text(" complete".into())).await;
+                    let _ = tx
+                        .send(Chunk::Done {
+                            stop_reason: StopReason::EndTurn,
+                            content: vec![ContentBlock::Text {
+                                text: " complete".into(),
+                            }],
+                        })
+                        .await;
+                }
+                Ok(())
+            }
+        }
+
+        let provider = MaxTokensProvider {
+            call_count: AtomicUsize::new(0),
+        };
+        let agent = make_agent(provider, ToolRegistry::new());
+
+        let (tx, rx) = mpsc::channel(64);
+        let handle = tokio::spawn(async move { collect_events(rx).await });
+        agent.run("test".into(), tx).await.unwrap();
+        let events = handle.await.unwrap();
+
+        // Should have 2 assistant messages (one truncated, one complete).
+        let assistant_count = events
+            .iter()
+            .filter(|e| matches!(e, StreamEvent::Assistant { .. }))
+            .count();
+        assert_eq!(assistant_count, 2, "should continue after max_tokens");
+
+        // Should succeed, not error.
+        assert!(has_result(&events, "success"));
+
+        // Provider should have been called twice.
+        assert!(
+            has_assistant_with_text(&events, "complete"),
+            "should have the continuation response"
+        );
+    }
+
+    #[tokio::test]
+    async fn parallel_tool_execution() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::Instant;
+
+        // Provider that requests 3 bash tool calls, then ends.
+        struct ParallelToolProvider {
+            call_count: AtomicUsize,
+        }
+
+        #[async_trait]
+        impl Provider for ParallelToolProvider {
+            async fn request(&self, req: Request, tx: mpsc::Sender<Chunk>) -> anyhow::Result<()> {
+                let n = self.call_count.fetch_add(1, Ordering::SeqCst);
+                let has_tool_result = req.messages.iter().any(|m| {
+                    m.content
+                        .iter()
+                        .any(|c| matches!(c, ContentBlock::ToolResult { .. }))
+                });
+
+                if has_tool_result || n > 0 {
+                    let _ = tx.send(Chunk::Text("done".into())).await;
+                    let _ = tx
+                        .send(Chunk::Done {
+                            stop_reason: StopReason::EndTurn,
+                            content: vec![ContentBlock::Text {
+                                text: "done".into(),
+                            }],
+                        })
+                        .await;
+                } else {
+                    // Request 3 sleep commands — should run in parallel.
+                    for i in 1..=3 {
+                        let input = json!({"command": "sleep 0.3 && echo ok"});
+                        let _ = tx
+                            .send(Chunk::ToolUse {
+                                id: format!("t{i}"),
+                                name: "bash".into(),
+                                input: input.clone(),
+                            })
+                            .await;
+                    }
+                    let input = json!({"command": "sleep 0.3 && echo ok"});
+                    let _ = tx
+                        .send(Chunk::Done {
+                            stop_reason: StopReason::ToolUse,
+                            content: vec![
+                                ContentBlock::ToolUse {
+                                    id: "t1".into(),
+                                    name: "bash".into(),
+                                    input: input.clone(),
+                                },
+                                ContentBlock::ToolUse {
+                                    id: "t2".into(),
+                                    name: "bash".into(),
+                                    input: input.clone(),
+                                },
+                                ContentBlock::ToolUse {
+                                    id: "t3".into(),
+                                    name: "bash".into(),
+                                    input,
+                                },
+                            ],
+                        })
+                        .await;
+                }
+                Ok(())
+            }
+        }
+
+        let provider = ParallelToolProvider {
+            call_count: AtomicUsize::new(0),
+        };
+        let agent = make_agent(provider, ToolRegistry::with_defaults());
+
+        let (tx, rx) = mpsc::channel(256);
+        let handle = tokio::spawn(async move { collect_events(rx).await });
+
+        let start = Instant::now();
+        agent.run("parallel test".into(), tx).await.unwrap();
+        let elapsed = start.elapsed();
+        let events = handle.await.unwrap();
+
+        // All 3 tool results should be present.
+        let tool_result_count = events
+            .iter()
+            .filter_map(|e| {
+                if let StreamEvent::User { message, .. } = e {
+                    Some(
+                        message
+                            .content
+                            .iter()
+                            .filter(|c| matches!(c, ContentBlock::ToolResult { .. }))
+                            .count(),
+                    )
+                } else {
+                    None
+                }
+            })
+            .max()
+            .unwrap_or(0);
+        assert_eq!(tool_result_count, 3, "should have 3 tool results");
+
+        // If run in parallel, 3x 300ms should take < 900ms.
+        // Allow generous margin but must be significantly less than sequential.
+        assert!(
+            elapsed.as_millis() < 800,
+            "parallel execution should take < 800ms, took {}ms",
+            elapsed.as_millis()
+        );
+
+        assert!(has_result(&events, "success"));
     }
 }

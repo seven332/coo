@@ -136,6 +136,7 @@ pub struct WorktreeInfo {
 }
 
 /// Context passed to tools during execution.
+#[derive(Clone)]
 pub struct ToolContext {
     pub provider: Arc<dyn Provider>,
     pub tools: Arc<ToolRegistry>,
