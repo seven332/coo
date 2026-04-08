@@ -236,6 +236,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn exact_limit_not_truncated() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..super::MAX_RESULTS {
+            fs::write(dir.path().join(format!("file_{i:03}.txt")), "").unwrap();
+        }
+
+        let tool = GlobTool;
+        let ctx = crate::tools::dummy_context();
+        let result = tool
+            .call(
+                json!({"pattern": "*.txt", "path": dir.path().to_str().unwrap()}),
+                &ctx,
+            )
+            .await;
+        assert!(!result.is_error);
+        let text = text_of(&result);
+        let file_lines: Vec<&str> = text.lines().filter(|l| l.contains("file_")).collect();
+        assert_eq!(file_lines.len(), super::MAX_RESULTS);
+        assert!(!text.contains("total matches"));
+    }
+
+    #[tokio::test]
     async fn cwd_used_when_no_path() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("a.rs"), "").unwrap();
