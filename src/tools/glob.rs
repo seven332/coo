@@ -8,6 +8,9 @@ use super::Tool;
 
 pub struct GlobTool;
 
+/// Maximum number of results to return. Prevents excessive output on large codebases.
+const MAX_RESULTS: usize = 200;
+
 #[derive(Deserialize)]
 struct Input {
     pattern: String,
@@ -22,11 +25,12 @@ impl Tool for GlobTool {
     }
 
     fn description(&self) -> &str {
-        "Fast file pattern matching tool. Returns matching file paths sorted by \
-         modification time (most recent first).\n\n\
+        "Fast file pattern matching tool that works with any codebase size. \
+         Returns matching file paths sorted by modification time (most recent first).\n\n\
          - Supports glob patterns like \"**/*.rs\" or \"src/**/*.ts\".\n\
          - Use this when you need to find files by name or extension.\n\
-         - For searching file contents, use grep instead."
+         - For searching file contents, use grep instead.\n\
+         - Returns at most 200 results. Narrow your pattern if results are truncated."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -87,16 +91,27 @@ impl Tool for GlobTool {
         // Sort by modification time, most recent first.
         entries.sort_by(|a, b| b.1.cmp(&a.1));
 
+        let total = entries.len() + errors.len();
+        let truncated = total > MAX_RESULTS;
+
         let mut matches: Vec<String> = entries
             .into_iter()
+            .take(MAX_RESULTS)
             .map(|(p, _)| p.display().to_string())
             .collect();
-        matches.extend(errors);
+        let remaining = MAX_RESULTS.saturating_sub(matches.len());
+        matches.extend(errors.into_iter().take(remaining));
 
         if matches.is_empty() {
             ToolResult::success("No matches found.")
         } else {
-            ToolResult::success(matches.join("\n"))
+            let mut text = matches.join("\n");
+            if truncated {
+                text.push_str(&format!(
+                    "\n\n({total} total matches, showing first {MAX_RESULTS}. Narrow your pattern for more specific results.)"
+                ));
+            }
+            ToolResult::success(text)
         }
     }
 }
@@ -194,6 +209,30 @@ mod tests {
             .await;
         assert!(!result.is_error);
         assert!(text_of(&result).contains("No matches"));
+    }
+
+    #[tokio::test]
+    async fn results_truncated_at_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..250 {
+            fs::write(dir.path().join(format!("file_{i:03}.txt")), "").unwrap();
+        }
+
+        let tool = GlobTool;
+        let ctx = crate::tools::dummy_context();
+        let result = tool
+            .call(
+                json!({"pattern": "*.txt", "path": dir.path().to_str().unwrap()}),
+                &ctx,
+            )
+            .await;
+        assert!(!result.is_error);
+        let text = text_of(&result);
+        // Should contain exactly MAX_RESULTS file paths.
+        let file_lines: Vec<&str> = text.lines().filter(|l| l.contains("file_")).collect();
+        assert_eq!(file_lines.len(), super::MAX_RESULTS);
+        assert!(text.contains("250 total matches"));
+        assert!(text.contains("showing first 200"));
     }
 
     #[tokio::test]
