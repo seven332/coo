@@ -149,7 +149,7 @@ impl Worktree {
 struct Input {
     prompt: String,
     #[serde(default)]
-    description: Option<String>,
+    description: String,
     #[serde(default)]
     name: Option<String>,
     #[serde(default)]
@@ -261,7 +261,7 @@ impl Tool for AgentTool {
                     "description": "The type of agent to use for this task"
                 }
             },
-            "required": ["prompt"]
+            "required": ["prompt", "description"]
         })
     }
 
@@ -299,7 +299,7 @@ impl Tool for AgentTool {
             None => None,
         };
 
-        let description = input.description.unwrap_or_default();
+        let description = input.description;
         // subagent_type defaults < explicit input overrides
         // Friendly names (sonnet/opus/haiku) are resolved to full model IDs.
         let model = input
