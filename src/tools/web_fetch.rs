@@ -46,8 +46,10 @@ impl Tool for WebFetchTool {
     }
 
     fn description(&self) -> &str {
-        "Fetch content from a URL. Returns the page content as markdown. \
-         HTML is converted to readable markdown format."
+        "Fetch content from a URL. Returns the page content as markdown.\n\n\
+         - HTML is converted to readable markdown (script and style tags are removed).\n\
+         - HTTP URLs are automatically upgraded to HTTPS.\n\
+         - Content exceeding max_length is truncated."
     }
 
     fn input_schema(&self) -> serde_json::Value {
