@@ -9,10 +9,14 @@ use tracing::{info, warn};
 use crate::message::{ContentBlock, Message, Role, StreamEvent, new_uuid};
 use crate::provider::{Chunk, Provider, Request, ResponseMeta, ServerTool, StopReason};
 use crate::tools::{BackgroundAgentResult, ToolContext, ToolRegistry, WorktreeInfo, git_cmd};
+use std::collections::{HashMap, HashSet};
 
 pub const DEFAULT_MAX_TOKENS: u32 = 32000;
 pub const DEFAULT_MAX_ITERATIONS: usize = 100;
 pub const DEFAULT_MAX_DEPTH: usize = 5;
+
+/// Shared map of agent_id → queued messages, used by SendMessage to deliver to running agents.
+pub type PendingMessagesMap = Arc<tokio::sync::Mutex<HashMap<String, Vec<String>>>>;
 
 pub struct Agent {
     provider: Arc<dyn Provider>,
@@ -29,6 +33,9 @@ pub struct Agent {
     /// Messages to prepend before the prompt (for fork optimization / prompt cache reuse).
     /// The cache_breakpoint is automatically set to the last prefix message.
     pub prefix_messages: Vec<Message>,
+    /// Shared pending messages map from the parent, for receiving queued messages via SendMessage.
+    /// If None, a fresh map is created in run_loop (typical for top-level agents).
+    pub pending_messages: Option<PendingMessagesMap>,
 }
 
 impl Agent {
@@ -51,6 +58,7 @@ impl Agent {
             session_id: new_uuid(),
             cwd: None,
             prefix_messages: Vec::new(),
+            pending_messages: None,
         }
     }
 
@@ -239,6 +247,14 @@ impl Agent {
             String,
             crate::tools::CompletedAgent,
         >::new()));
+        let running_agents = Arc::new(tokio::sync::Mutex::new(HashSet::<String>::new()));
+        let agent_name_registry =
+            Arc::new(tokio::sync::Mutex::new(HashMap::<String, String>::new()));
+        let pending_messages = self.pending_messages.clone().unwrap_or_else(|| {
+            Arc::new(tokio::sync::Mutex::new(
+                HashMap::<String, Vec<String>>::new(),
+            ))
+        });
         let parent_messages = Arc::new(tokio::sync::Mutex::new(Vec::new()));
 
         let tool_context = ToolContext {
@@ -255,6 +271,9 @@ impl Agent {
             background_handles: background_handles.clone(),
             background_worktrees: background_worktrees.clone(),
             completed_agents,
+            running_agents,
+            agent_name_registry,
+            pending_messages,
             parent_messages: parent_messages.clone(),
             cwd: self.cwd.clone(),
         };
@@ -545,6 +564,37 @@ impl Agent {
                 })
                 .await;
             messages.push(tool_result_msg);
+
+            // Drain pending messages queued by SendMessage for this agent.
+            let drained = {
+                let mut pm = tool_context.pending_messages.lock().await;
+                pm.remove(&self.session_id).unwrap_or_default()
+            };
+            if !drained.is_empty() {
+                info!(
+                    count = drained.len(),
+                    "Injecting pending messages from SendMessage"
+                );
+                let text = drained
+                    .into_iter()
+                    .map(|m| format!("<queued-message>\n{m}\n</queued-message>"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let pending_msg = Message {
+                    role: Role::User,
+                    content: vec![ContentBlock::Text { text }],
+                };
+                let (sid, uid) = self.event_meta();
+                let _ = event_tx
+                    .send(StreamEvent::User {
+                        message: pending_msg.clone(),
+                        parent_tool_use_id: json!(null),
+                        session_id: sid,
+                        uuid: uid,
+                    })
+                    .await;
+                messages.push(pending_msg);
+            }
         }
 
         let orphaned = pending_background.load(Ordering::SeqCst);

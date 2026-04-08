@@ -18,7 +18,7 @@ pub use send_message::SendMessageTool;
 pub use web_fetch::WebFetchTool;
 pub use write::WriteTool;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 
@@ -153,6 +153,12 @@ pub struct ToolContext {
     /// Completed sub-agents available for resumption via SendMessage.
     /// Keyed by agent_id. Agents with names are also findable by name.
     pub completed_agents: Arc<Mutex<HashMap<String, CompletedAgent>>>,
+    /// IDs of currently running background agents.
+    pub running_agents: Arc<Mutex<HashSet<String>>>,
+    /// Agent name → agent_id mapping for running background agents.
+    pub agent_name_registry: Arc<Mutex<HashMap<String, String>>>,
+    /// Pending messages queued for running agents. Keyed by agent_id.
+    pub pending_messages: Arc<Mutex<HashMap<String, Vec<String>>>>,
     /// Parent agent's messages for fork optimization (prompt cache reuse).
     /// Updated each iteration with the current conversation state.
     pub parent_messages: Arc<Mutex<Vec<crate::message::Message>>>,
@@ -367,6 +373,9 @@ pub(crate) fn dummy_context() -> ToolContext {
         background_handles: Arc::new(Mutex::new(Vec::new())),
         background_worktrees: Arc::new(Mutex::new(Vec::new())),
         completed_agents: Arc::new(Mutex::new(HashMap::new())),
+        running_agents: Arc::new(Mutex::new(HashSet::new())),
+        agent_name_registry: Arc::new(Mutex::new(HashMap::new())),
+        pending_messages: Arc::new(Mutex::new(HashMap::new())),
         parent_messages: Arc::new(Mutex::new(Vec::new())),
         cwd: None,
     }

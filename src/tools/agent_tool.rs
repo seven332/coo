@@ -356,6 +356,8 @@ impl Tool for AgentTool {
         agent.cwd = worktree.as_ref().map(|wt| wt.path.clone());
         // Fork optimization: inherit parent messages as prefix for prompt cache reuse.
         agent.prefix_messages = context.parent_messages.lock().await.clone();
+        // Share parent's pending_messages so SendMessage can queue messages to this agent.
+        agent.pending_messages = Some(context.pending_messages.clone());
         let agent_cwd = agent.cwd.clone();
 
         let agent_id = agent.session_id.clone();
@@ -370,6 +372,16 @@ impl Tool for AgentTool {
         );
 
         if input.run_in_background {
+            // Register as a running agent so SendMessage can queue messages to it.
+            context.running_agents.lock().await.insert(agent_id.clone());
+            if let Some(ref name) = agent_name {
+                context
+                    .agent_name_registry
+                    .lock()
+                    .await
+                    .insert(name.clone(), agent_id.clone());
+            }
+
             // Register worktree for cleanup in case the bg task is aborted.
             // Double cleanup is harmless (git worktree remove on non-existent is a no-op).
             if let Some(ref wt) = worktree {
@@ -387,8 +399,17 @@ impl Tool for AgentTool {
             let background_tx = context.background_tx.clone();
             let pending = context.pending_background.clone();
             let bg_worktrees = context.background_worktrees.clone();
+            let bg_completed_agents = context.completed_agents.clone();
+            let bg_running_agents = context.running_agents.clone();
+            let bg_name_registry = context.agent_name_registry.clone();
+            let bg_pending_messages = context.pending_messages.clone();
             let bg_agent_id = agent_id.clone();
+            let bg_agent_name = agent_name.clone();
             let bg_description = description.clone();
+            let bg_model = model.clone();
+            let bg_system = system.clone();
+            let bg_tools = tools.clone();
+            let bg_cwd = agent_cwd.clone();
             let prompt = input.prompt;
             let wt_path_for_removal = worktree.as_ref().map(|wt| wt.path.clone());
 
@@ -412,7 +433,7 @@ impl Tool for AgentTool {
 
                 let duration_ms = start.elapsed().as_millis() as u64;
 
-                let (mut result, is_error, _agent_messages) = match handle.await {
+                let (mut result, is_error, agent_messages) = match handle.await {
                     Ok(Ok(msgs)) if !had_error => {
                         let text = if output.is_empty() {
                             "(sub-agent produced no text output)".to_string()
@@ -445,9 +466,46 @@ impl Tool for AgentTool {
                     bg_worktrees.lock().await.retain(|w| w.path != *path);
                 }
 
-                // Note: background agents don't store in completed_agents for now,
-                // since they lack access to the agent's config after the spawn.
-                // This could be added later if needed.
+                // Deregister, drain orphaned messages, and store as completed — all while
+                // holding running_agents lock to prevent SendMessage from queueing to a
+                // deregistered agent (lock ordering: running_agents → pending_messages).
+                {
+                    let mut running = bg_running_agents.lock().await;
+                    running.remove(&bg_agent_id);
+                    if let Some(ref name) = bg_agent_name {
+                        bg_name_registry.lock().await.remove(name);
+                    }
+                    // Drain any messages queued after the agent loop exited.
+                    let orphaned_msgs = bg_pending_messages
+                        .lock()
+                        .await
+                        .remove(&bg_agent_id)
+                        .unwrap_or_default();
+                    if !orphaned_msgs.is_empty() {
+                        let count = orphaned_msgs.len();
+                        result.push_str(&format!(
+                            "\n({count} queued message(s) arrived after agent finished: {})",
+                            orphaned_msgs.join(" | ")
+                        ));
+                    }
+                    // Store as completed for resumption via SendMessage.
+                    // Done under the same lock so there's no window where the agent is
+                    // neither running nor completed (fixes "agent not found" race).
+                    if let Some(msgs) = agent_messages {
+                        bg_completed_agents.lock().await.insert(
+                            bg_agent_id.clone(),
+                            super::CompletedAgent {
+                                agent_id: bg_agent_id.clone(),
+                                name: bg_agent_name,
+                                messages: msgs,
+                                model: bg_model,
+                                system: bg_system,
+                                tools: bg_tools,
+                                cwd: bg_cwd,
+                            },
+                        );
+                    }
+                }
 
                 let _ = background_tx
                     .send(BackgroundAgentResult {
@@ -612,6 +670,11 @@ mod tests {
             background_handles: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             background_worktrees: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             completed_agents: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+            running_agents: Arc::new(tokio::sync::Mutex::new(std::collections::HashSet::new())),
+            agent_name_registry: Arc::new(
+                tokio::sync::Mutex::new(std::collections::HashMap::new()),
+            ),
+            pending_messages: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
             parent_messages: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             cwd: None,
         };

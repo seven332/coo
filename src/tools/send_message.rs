@@ -26,9 +26,10 @@ impl Tool for SendMessageTool {
     }
 
     fn description(&self) -> &str {
-        "Send a message to a previously spawned agent to continue its conversation. \
-         The agent resumes with its full context preserved. Use the agent's name or ID \
-         as the 'to' field."
+        "Send a message to a previously spawned agent. If the agent is currently running \
+         in the background, the message is queued for delivery at its next tool round. \
+         If the agent has completed, it is resumed with its full context preserved. \
+         Use the agent's name or ID as the 'to' field."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -58,7 +59,45 @@ impl Tool for SendMessageTool {
             return ToolResult::error(format!("Max agent depth {} reached", context.max_depth));
         }
 
-        // Find the agent by ID or name.
+        // Resolve agent ID and queue if running — hold running_agents lock through
+        // the entire check+queue to prevent race with background agent deregister+drain.
+        {
+            let running = context.running_agents.lock().await;
+            let resolved_id = if running.contains(&input.to) {
+                Some(input.to.clone())
+            } else {
+                // Try name registry for running background agents.
+                context
+                    .agent_name_registry
+                    .lock()
+                    .await
+                    .get(&input.to)
+                    .cloned()
+            };
+
+            if let Some(ref agent_id) = resolved_id
+                && running.contains(agent_id)
+            {
+                info!(
+                    agent_id,
+                    to = input.to,
+                    "Queueing message for running agent"
+                );
+                context
+                    .pending_messages
+                    .lock()
+                    .await
+                    .entry(agent_id.clone())
+                    .or_default()
+                    .push(input.message);
+                return ToolResult::success(format!(
+                    "Message queued for delivery to '{}' at its next tool round.\nagentId: {agent_id}",
+                    input.to
+                ));
+            }
+        }
+
+        // Agent is not running — try to resume from completed agents.
         let mut agents = context.completed_agents.lock().await;
         let agent_key = {
             // Try direct ID lookup first.
@@ -75,7 +114,7 @@ impl Tool for SendMessageTool {
 
         let Some(key) = agent_key else {
             return ToolResult::error(format!(
-                "Agent '{}' not found. It may have been a background agent or may not exist.",
+                "Agent '{}' not found. It may not exist or may still be starting up.",
                 input.to
             ));
         };
@@ -194,7 +233,7 @@ mod tests {
     use crate::message::{ContentBlock, ToolResultContent};
     use crate::provider::{Chunk, Provider, Request, StopReason};
     use crate::tools::ToolRegistry;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::sync::Arc;
 
     struct EchoProvider;
@@ -239,6 +278,9 @@ mod tests {
             background_handles: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             background_worktrees: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             completed_agents: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            running_agents: Arc::new(tokio::sync::Mutex::new(HashSet::new())),
+            agent_name_registry: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            pending_messages: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             parent_messages: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             cwd: None,
         }
@@ -434,5 +476,136 @@ mod tests {
             .call(json!({"to": "dup", "message": "which one?"}), &ctx)
             .await;
         assert!(!result.is_error);
+    }
+
+    #[tokio::test]
+    async fn queue_message_for_running_agent() {
+        let provider: Arc<dyn Provider> = Arc::new(EchoProvider);
+        let ctx = make_context(provider);
+
+        let agent_id = "running-agent-123".to_string();
+        // Simulate a running background agent.
+        ctx.running_agents.lock().await.insert(agent_id.clone());
+
+        let tool = SendMessageTool;
+        let result = tool
+            .call(
+                json!({"to": &agent_id, "message": "hello running agent"}),
+                &ctx,
+            )
+            .await;
+        assert!(!result.is_error);
+        let text = match &result.content[0] {
+            ToolResultContent::Text { text } => text.as_str(),
+            _ => panic!("expected text"),
+        };
+        assert!(text.contains("queued"));
+        assert!(text.contains(&agent_id));
+
+        // Verify the message was queued.
+        let pm = ctx.pending_messages.lock().await;
+        let msgs = pm.get(&agent_id).unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0], "hello running agent");
+    }
+
+    #[tokio::test]
+    async fn queue_message_by_name_for_running_agent() {
+        let provider: Arc<dyn Provider> = Arc::new(EchoProvider);
+        let ctx = make_context(provider);
+
+        let agent_id = "running-named-456".to_string();
+        ctx.running_agents.lock().await.insert(agent_id.clone());
+        ctx.agent_name_registry
+            .lock()
+            .await
+            .insert("my-worker".into(), agent_id.clone());
+
+        let tool = SendMessageTool;
+        let result = tool
+            .call(json!({"to": "my-worker", "message": "task update"}), &ctx)
+            .await;
+        assert!(!result.is_error);
+        let text = match &result.content[0] {
+            ToolResultContent::Text { text } => text.as_str(),
+            _ => panic!("expected text"),
+        };
+        assert!(text.contains("queued"));
+
+        let pm = ctx.pending_messages.lock().await;
+        assert_eq!(pm.get(&agent_id).unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn stale_name_registry_falls_through_to_completed() {
+        // name_registry has an entry but the agent is NOT in running_agents.
+        // This simulates a stale registry entry. SendMessage should NOT queue;
+        // it should fall through and resume the completed agent instead.
+        let provider: Arc<dyn Provider> = Arc::new(EchoProvider);
+        let ctx = make_context(provider);
+
+        // Create a completed agent with a name.
+        let agent_tool = super::super::AgentTool;
+        let result = agent_tool
+            .call(json!({"prompt": "task", "name": "stale-worker"}), &ctx)
+            .await;
+        assert!(!result.is_error);
+
+        // Add a stale name registry entry (agent is completed, not running).
+        let agent_id = {
+            let agents = ctx.completed_agents.lock().await;
+            agents
+                .iter()
+                .find(|(_, a)| a.name.as_deref() == Some("stale-worker"))
+                .map(|(k, _)| k.clone())
+                .unwrap()
+        };
+        ctx.agent_name_registry
+            .lock()
+            .await
+            .insert("stale-worker".into(), agent_id.clone());
+        // Note: agent_id is NOT in running_agents.
+
+        // SendMessage should resume (not queue).
+        let tool = SendMessageTool;
+        let result = tool
+            .call(json!({"to": "stale-worker", "message": "follow up"}), &ctx)
+            .await;
+        assert!(!result.is_error);
+        let text = match &result.content[0] {
+            ToolResultContent::Text { text } => text.as_str(),
+            _ => panic!("expected text"),
+        };
+        // Should be a resume result, not a "queued" result.
+        assert!(!text.contains("queued"));
+        assert!(text.contains("agentId:"));
+
+        // pending_messages should be empty — nothing was queued.
+        let pm = ctx.pending_messages.lock().await;
+        assert!(pm.get(&agent_id).is_none());
+    }
+
+    #[tokio::test]
+    async fn multiple_queued_messages() {
+        let provider: Arc<dyn Provider> = Arc::new(EchoProvider);
+        let ctx = make_context(provider);
+
+        let agent_id = "running-multi-789".to_string();
+        ctx.running_agents.lock().await.insert(agent_id.clone());
+
+        let tool = SendMessageTool;
+        tool.call(json!({"to": &agent_id, "message": "msg1"}), &ctx)
+            .await;
+        tool.call(json!({"to": &agent_id, "message": "msg2"}), &ctx)
+            .await;
+        tool.call(json!({"to": &agent_id, "message": "msg3"}), &ctx)
+            .await;
+
+        let pm = ctx.pending_messages.lock().await;
+        let msgs = pm.get(&agent_id).unwrap();
+        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs[0], "msg1");
+        assert_eq!(msgs[1], "msg2");
+        assert_eq!(msgs[2], "msg3");
     }
 }
