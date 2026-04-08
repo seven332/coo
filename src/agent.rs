@@ -464,9 +464,27 @@ impl Agent {
                 .await;
             messages.push(assistant_msg);
 
-            // MaxTokens: continue the conversation to get the rest of the output.
+            // MaxTokens: insert a user continuation message so the LLM picks up
+            // where it left off. The Anthropic API requires alternating user/assistant
+            // messages, so we cannot just `continue` with the last message being assistant.
             if stop_reason == StopReason::MaxTokens {
                 info!("Response truncated (max_tokens) — continuing");
+                let cont_msg = Message {
+                    role: Role::User,
+                    content: vec![ContentBlock::Text {
+                        text: "Continue from where you left off.".to_string(),
+                    }],
+                };
+                let (sid, uid) = self.event_meta();
+                let _ = event_tx
+                    .send(StreamEvent::User {
+                        message: cont_msg.clone(),
+                        parent_tool_use_id: json!(null),
+                        session_id: sid,
+                        uuid: uid,
+                    })
+                    .await;
+                messages.push(cont_msg);
                 continue;
             }
 
@@ -1552,7 +1570,11 @@ mod tests {
 
         #[async_trait]
         impl Provider for MaxTokensProvider {
-            async fn request(&self, _req: Request, tx: mpsc::Sender<Chunk>) -> anyhow::Result<()> {
+            async fn request(&self, req: Request, tx: mpsc::Sender<Chunk>) -> anyhow::Result<()> {
+                // Verify messages alternate user/assistant (as Anthropic API requires).
+                for pair in req.messages.windows(2) {
+                    assert_ne!(pair[0].role, pair[1].role, "messages must alternate roles");
+                }
                 let n = self.call_count.fetch_add(1, Ordering::SeqCst);
                 if n == 0 {
                     // First call: truncated response.
@@ -1605,6 +1627,22 @@ mod tests {
         assert!(
             has_assistant_with_text(&events, "complete"),
             "should have the continuation response"
+        );
+
+        // Should have a user continuation message injected between the two assistant messages.
+        let has_continuation = events.iter().any(|e| {
+            if let StreamEvent::User { message, .. } = e {
+                message.content.iter().any(|c| match c {
+                    ContentBlock::Text { text } => text.contains("Continue"),
+                    _ => false,
+                })
+            } else {
+                false
+            }
+        });
+        assert!(
+            has_continuation,
+            "should inject a user continuation message after max_tokens"
         );
     }
 
