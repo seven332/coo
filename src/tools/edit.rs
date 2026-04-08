@@ -25,12 +25,12 @@ impl Tool for EditTool {
 
     fn description(&self) -> &str {
         "Perform exact string replacements in a file.\n\n\
-         - The old_string must match exactly (including indentation and whitespace).\n\
+         - You MUST read the file before editing it to understand existing content.\n\
+         - The old_string must match exactly — including indentation, whitespace, and line endings.\n\
          - The edit will fail if old_string is not unique in the file. Provide more \
          surrounding context to make it unique, or use replace_all to change every occurrence.\n\
          - Use replace_all for renaming variables or strings across the file.\n\
-         - ALWAYS prefer editing existing files over creating new ones.\n\
-         - You should read a file before editing it to understand existing content."
+         - ALWAYS prefer editing existing files over creating new ones."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -51,7 +51,8 @@ impl Tool for EditTool {
                 },
                 "replace_all": {
                     "type": "boolean",
-                    "description": "Replace all occurrences (default: false, replaces first only)"
+                    "description": "Replace all occurrences (default: false, replaces first only)",
+                    "default": false
                 }
             },
             "required": ["file_path", "old_string", "new_string"]
