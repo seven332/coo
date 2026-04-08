@@ -110,7 +110,9 @@ impl Tool for BashTool {
     }
 
     fn description(&self) -> &str {
-        "Execute a bash command and return its output.\n\n\
+        "Execute a bash command and return its output. \
+         Each command runs in a fresh shell — shell state (variables, functions) does not persist \
+         between calls, but the working directory is inherited from the agent's cwd.\n\n\
          Do NOT use bash when a dedicated tool is available:\n\
          - File search: use glob (not find or ls)\n\
          - Content search: use grep (not grep or rg)\n\
@@ -139,7 +141,8 @@ impl Tool for BashTool {
                 },
                 "timeout": {
                     "type": "integer",
-                    "description": "Timeout in milliseconds (default: 120000, max: 600000)"
+                    "description": "Timeout in milliseconds (default: 120000, max: 600000)",
+                    "maximum": 600000
                 },
                 "run_in_background": {
                     "type": "boolean",
