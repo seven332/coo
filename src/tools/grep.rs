@@ -256,7 +256,8 @@ async fn run_rg(input: &Input, path: &str) -> Result<String, String> {
         cmd.arg("--type").arg(t);
     }
 
-    cmd.arg(&input.pattern).arg(path);
+    // Use -e to prevent patterns starting with '-' from being parsed as flags.
+    cmd.arg("-e").arg(&input.pattern).arg(path);
 
     let output = cmd
         .output()
@@ -333,7 +334,8 @@ async fn run_grep(input: &Input, path: &str) -> Result<String, String> {
         }
     }
 
-    cmd.arg(&input.pattern).arg(path);
+    // Use -e to prevent patterns starting with '-' from being parsed as flags.
+    cmd.arg("-e").arg(&input.pattern).arg(path);
 
     let output = cmd
         .output()
@@ -796,6 +798,28 @@ mod tests {
             .await;
         assert!(!result.is_error);
         assert!(text_of(&result).contains("offset exceeds"));
+    }
+
+    #[tokio::test]
+    async fn pattern_with_leading_dash() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("test.txt"), "foo --bar baz\nno match").unwrap();
+
+        let tool = GrepTool;
+        let ctx = crate::tools::dummy_context();
+        let result = tool
+            .call(
+                json!({
+                    "pattern": "--bar",
+                    "path": dir.path().join("test.txt").to_str().unwrap(),
+                    "output_mode": "content"
+                }),
+                &ctx,
+            )
+            .await;
+        assert!(!result.is_error, "should not fail: {:?}", result);
+        let text = text_of(&result);
+        assert!(text.contains("--bar"), "should find pattern: {text}");
     }
 
     #[tokio::test]
