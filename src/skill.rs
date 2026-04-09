@@ -21,6 +21,66 @@ pub struct Skill {
     pub user_invocable: bool,
 }
 
+impl Skill {
+    /// Render the skill content with argument substitution.
+    ///
+    /// Replaces `$ARGUMENTS` with the full argument string, and `$0`, `$1`, ...
+    /// (or `$ARGUMENTS[0]`, `$ARGUMENTS[1]`, ...) with positional arguments.
+    /// Arguments are split using shell-style quoting (double quotes group words).
+    /// If the content does not contain `$ARGUMENTS`, appends `\nARGUMENTS: <args>`.
+    pub fn render(&self, args: &str) -> String {
+        if args.is_empty() {
+            return self.content.clone();
+        }
+
+        let positional = parse_args(args);
+        let has_arguments_ref = self.content.contains("$ARGUMENTS") || self.content.contains("$0");
+
+        let mut result = self.content.clone();
+
+        // Replace indexed forms first ($ARGUMENTS[N] and $N) before $ARGUMENTS,
+        // so that "$ARGUMENTS[0]" isn't partially consumed by "$ARGUMENTS".
+        for (i, arg) in positional.iter().enumerate() {
+            result = result.replace(&format!("$ARGUMENTS[{i}]"), arg);
+            result = result.replace(&format!("${i}"), arg);
+        }
+
+        result = result.replace("$ARGUMENTS", args);
+
+        // If the skill content didn't reference arguments at all, append them.
+        if !has_arguments_ref {
+            result.push_str(&format!("\nARGUMENTS: {args}"));
+        }
+
+        result
+    }
+}
+
+/// Parse an argument string into positional arguments with shell-style quoting.
+/// Double-quoted strings are treated as single arguments.
+fn parse_args(args: &str) -> Vec<String> {
+    let mut result = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+
+    for ch in args.chars() {
+        match ch {
+            '"' => in_quotes = !in_quotes,
+            ' ' | '\t' if !in_quotes => {
+                if !current.is_empty() {
+                    result.push(std::mem::take(&mut current));
+                }
+            }
+            _ => current.push(ch),
+        }
+    }
+    if !current.is_empty() {
+        result.push(current);
+    }
+
+    result
+}
+
 /// Raw frontmatter parsed from YAML.
 #[derive(Debug, Deserialize, Default)]
 #[serde(default)]
@@ -457,5 +517,136 @@ mod tests {
         let deploy = registry.get("deploy").unwrap();
         assert_eq!(deploy.description, "From skills dir");
         assert_eq!(deploy.content, "Skills version.");
+    }
+
+    // --- parse_args tests ---
+
+    #[test]
+    fn parse_args_simple() {
+        assert_eq!(parse_args("a b c"), vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn parse_args_quoted() {
+        assert_eq!(
+            parse_args(r#""hello world" second"#),
+            vec!["hello world", "second"]
+        );
+    }
+
+    #[test]
+    fn parse_args_empty() {
+        assert!(parse_args("").is_empty());
+    }
+
+    #[test]
+    fn parse_args_extra_whitespace() {
+        assert_eq!(parse_args("  a   b  "), vec!["a", "b"]);
+    }
+
+    #[test]
+    fn parse_args_single() {
+        assert_eq!(parse_args("only"), vec!["only"]);
+    }
+
+    // --- Skill::render tests ---
+
+    #[test]
+    fn render_with_arguments_placeholder() {
+        let skill = Skill {
+            name: "test".into(),
+            description: String::new(),
+            content: "Run: $ARGUMENTS".into(),
+            allowed_tools: None,
+            context: None,
+            agent: None,
+            disable_model_invocation: false,
+            user_invocable: true,
+        };
+        assert_eq!(skill.render("foo bar"), "Run: foo bar");
+    }
+
+    #[test]
+    fn render_with_positional_args() {
+        let skill = Skill {
+            name: "test".into(),
+            description: String::new(),
+            content: "Migrate $0 from $1 to $2.".into(),
+            allowed_tools: None,
+            context: None,
+            agent: None,
+            disable_model_invocation: false,
+            user_invocable: true,
+        };
+        assert_eq!(
+            skill.render("SearchBar React Vue"),
+            "Migrate SearchBar from React to Vue."
+        );
+    }
+
+    #[test]
+    fn render_with_indexed_arguments() {
+        let skill = Skill {
+            name: "test".into(),
+            description: String::new(),
+            content: "File: $ARGUMENTS[0], Format: $ARGUMENTS[1]".into(),
+            allowed_tools: None,
+            context: None,
+            agent: None,
+            disable_model_invocation: false,
+            user_invocable: true,
+        };
+        assert_eq!(skill.render("main.rs json"), "File: main.rs, Format: json");
+    }
+
+    #[test]
+    fn render_appends_when_no_placeholder() {
+        let skill = Skill {
+            name: "test".into(),
+            description: String::new(),
+            content: "Just do the thing.".into(),
+            allowed_tools: None,
+            context: None,
+            agent: None,
+            disable_model_invocation: false,
+            user_invocable: true,
+        };
+        assert_eq!(
+            skill.render("extra info"),
+            "Just do the thing.\nARGUMENTS: extra info"
+        );
+    }
+
+    #[test]
+    fn render_empty_args_returns_content_unchanged() {
+        let skill = Skill {
+            name: "test".into(),
+            description: String::new(),
+            content: "No args needed: $ARGUMENTS".into(),
+            allowed_tools: None,
+            context: None,
+            agent: None,
+            disable_model_invocation: false,
+            user_invocable: true,
+        };
+        assert_eq!(skill.render(""), "No args needed: $ARGUMENTS");
+    }
+
+    #[test]
+    fn render_quoted_args() {
+        let skill = Skill {
+            name: "test".into(),
+            description: String::new(),
+            content: "Search for $0 in $1".into(),
+            allowed_tools: None,
+            context: None,
+            agent: None,
+            disable_model_invocation: false,
+            user_invocable: true,
+        };
+        assert_eq!(
+            skill.render(r#""hello world" src/"#),
+            "Search for hello world in src/"
+        );
     }
 }
