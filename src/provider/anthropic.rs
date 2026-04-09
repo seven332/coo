@@ -190,12 +190,16 @@ fn is_retryable_error(error_type: &str) -> bool {
     )
 }
 
+/// Whether an HTTP status code is retryable (429, 529, 5xx).
+fn is_retryable_status(code: u16) -> bool {
+    code == 429 || code == 529 || (500..600).contains(&code)
+}
+
 /// Whether an SSE/HTTP error is retryable (network errors, 5xx, 429, 529).
 fn is_retryable_sse_error(e: &reqwest_eventsource::Error) -> bool {
     match e {
         reqwest_eventsource::Error::InvalidStatusCode(status, _) => {
-            let code = status.as_u16();
-            code == 429 || code == 529 || (500..600).contains(&code)
+            is_retryable_status(status.as_u16())
         }
         reqwest_eventsource::Error::Transport(_) => true,
         _ => false,
@@ -579,5 +583,34 @@ impl Provider for AnthropicProvider {
             .send(Chunk::Error(format!("Max retries exceeded: {last_error}")))
             .await;
         bail!("Max retries ({MAX_RETRIES}) exceeded: {last_error}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retryable_api_errors() {
+        assert!(is_retryable_error("overloaded_error"));
+        assert!(is_retryable_error("rate_limit_error"));
+        assert!(is_retryable_error("api_error"));
+        assert!(!is_retryable_error("invalid_request_error"));
+        assert!(!is_retryable_error("authentication_error"));
+        assert!(!is_retryable_error(""));
+    }
+
+    #[test]
+    fn retryable_status_codes() {
+        assert!(is_retryable_status(429));
+        assert!(is_retryable_status(529));
+        assert!(is_retryable_status(500));
+        assert!(is_retryable_status(502));
+        assert!(is_retryable_status(503));
+        assert!(!is_retryable_status(400));
+        assert!(!is_retryable_status(401));
+        assert!(!is_retryable_status(403));
+        assert!(!is_retryable_status(404));
+        assert!(!is_retryable_status(200));
     }
 }
