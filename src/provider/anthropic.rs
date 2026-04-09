@@ -131,7 +131,11 @@ enum ContentBlockInfo {
     Thinking {
         #[serde(default)]
         thinking: String,
+        #[serde(default)]
+        signature: Option<String>,
     },
+    #[serde(rename = "redacted_thinking")]
+    RedactedThinking { data: String },
 }
 
 #[derive(Deserialize, Debug)]
@@ -144,10 +148,7 @@ enum Delta {
     #[serde(rename = "thinking_delta")]
     Thinking { thinking: String },
     #[serde(rename = "signature_delta")]
-    Signature {
-        #[allow(dead_code)]
-        signature: String,
-    },
+    Signature { signature: String },
 }
 
 #[derive(Deserialize, Debug)]
@@ -367,13 +368,26 @@ impl Provider for AnthropicProvider {
                                     Delta::Thinking { ref thinking } => {
                                         if let ContentBlockInfo::Thinking {
                                             thinking: ref mut accumulated,
+                                            ..
                                         } = block.info
                                         {
                                             accumulated.push_str(thinking);
                                         }
                                         let _ = tx.send(Chunk::Thinking(thinking.clone())).await;
                                     }
-                                    Delta::Signature { .. } => {}
+                                    Delta::Signature { signature } => {
+                                        if let ContentBlockInfo::Thinking {
+                                            signature: ref mut sig,
+                                            ..
+                                        } = block.info
+                                        {
+                                            *sig = Some(
+                                                sig.as_deref()
+                                                    .map(|s| format!("{s}{signature}"))
+                                                    .unwrap_or(signature),
+                                            );
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -454,7 +468,16 @@ impl Provider for AnthropicProvider {
                     tool_use_id,
                     content,
                 },
-                ContentBlockInfo::Thinking { thinking } => ContentBlock::Thinking { thinking },
+                ContentBlockInfo::Thinking {
+                    thinking,
+                    signature,
+                } => ContentBlock::Thinking {
+                    thinking,
+                    signature,
+                },
+                ContentBlockInfo::RedactedThinking { data } => {
+                    ContentBlock::RedactedThinking { data }
+                }
             })
             .collect();
 

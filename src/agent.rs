@@ -1052,6 +1052,7 @@ mod tests {
                         content: vec![
                             ContentBlock::Thinking {
                                 thinking: "hmm".into(),
+                                signature: None,
                             },
                             ContentBlock::Text { text: "ok".into() },
                         ],

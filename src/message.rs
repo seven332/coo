@@ -63,6 +63,13 @@ pub enum ContentBlock {
     },
     Thinking {
         thinking: String,
+        /// Signature for verifying thinking integrity when sent back to the API.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
+    },
+    /// Redacted thinking block — opaque data that must be passed back verbatim.
+    RedactedThinking {
+        data: String,
     },
 }
 
@@ -212,6 +219,69 @@ mod tests {
         let json = serde_json::to_value(&block).unwrap();
         assert_eq!(json["type"], "web_search_tool_result");
         assert_eq!(json["tool_use_id"], "stu_01");
+    }
+
+    #[test]
+    fn serialize_thinking_with_signature() {
+        let block = ContentBlock::Thinking {
+            thinking: "let me think".into(),
+            signature: Some("sig123".into()),
+        };
+        let json = serde_json::to_value(&block).unwrap();
+        assert_eq!(json["type"], "thinking");
+        assert_eq!(json["thinking"], "let me think");
+        assert_eq!(json["signature"], "sig123");
+    }
+
+    #[test]
+    fn serialize_thinking_without_signature() {
+        let block = ContentBlock::Thinking {
+            thinking: "hmm".into(),
+            signature: None,
+        };
+        let json = serde_json::to_value(&block).unwrap();
+        assert_eq!(json["type"], "thinking");
+        assert_eq!(json["thinking"], "hmm");
+        assert!(json.get("signature").is_none());
+    }
+
+    #[test]
+    fn serialize_redacted_thinking() {
+        let block = ContentBlock::RedactedThinking {
+            data: "opaque_data".into(),
+        };
+        let json = serde_json::to_value(&block).unwrap();
+        assert_eq!(json["type"], "redacted_thinking");
+        assert_eq!(json["data"], "opaque_data");
+    }
+
+    #[test]
+    fn roundtrip_redacted_thinking() {
+        let block = ContentBlock::RedactedThinking {
+            data: "opaque".into(),
+        };
+        let serialized = serde_json::to_string(&block).unwrap();
+        let deserialized: ContentBlock = serde_json::from_str(&serialized).unwrap();
+        assert!(
+            matches!(deserialized, ContentBlock::RedactedThinking { data } if data == "opaque")
+        );
+    }
+
+    #[test]
+    fn roundtrip_thinking_with_signature() {
+        let block = ContentBlock::Thinking {
+            thinking: "deep thought".into(),
+            signature: Some("sig_abc".into()),
+        };
+        let serialized = serde_json::to_string(&block).unwrap();
+        let deserialized: ContentBlock = serde_json::from_str(&serialized).unwrap();
+        assert!(matches!(
+            deserialized,
+            ContentBlock::Thinking {
+                thinking,
+                signature: Some(sig)
+            } if thinking == "deep thought" && sig == "sig_abc"
+        ));
     }
 
     #[test]
