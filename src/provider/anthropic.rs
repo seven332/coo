@@ -1,11 +1,23 @@
-use anyhow::{Context as _, bail};
+use std::time::Duration;
+
+use anyhow::bail;
 use async_trait::async_trait;
 use reqwest_eventsource::{Event, EventSource};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
+use tracing::warn;
 
 use super::{Chunk, Provider, Request, ResponseMeta, StopReason};
 use crate::message::{ContentBlock, new_uuid as uuid};
+
+/// Request timeout matching the X-Stainless-Timeout header.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// Maximum number of retries for transient errors.
+const MAX_RETRIES: u32 = 3;
+
+/// Initial backoff for retries.
+const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
 
 pub struct AnthropicProvider {
     client: reqwest::Client,
@@ -19,7 +31,10 @@ impl AnthropicProvider {
     pub fn new(token: String, base_url: Option<String>) -> Self {
         let is_oauth = token.starts_with("sk-ant-oat");
         Self {
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .timeout(REQUEST_TIMEOUT)
+                .build()
+                .expect("failed to build HTTP client"),
             token,
             is_oauth,
             base_url: base_url.unwrap_or_else(|| "https://api.anthropic.com".to_string()),
@@ -106,6 +121,9 @@ enum SseEvent {
 
 #[derive(Deserialize, Debug)]
 struct ApiError {
+    #[serde(rename = "type")]
+    #[serde(default)]
+    error_type: String,
     message: String,
 }
 
@@ -164,9 +182,29 @@ struct BlockAccumulator {
     json_buf: String,
 }
 
-#[async_trait]
-impl Provider for AnthropicProvider {
-    async fn request(&self, req: Request, tx: mpsc::Sender<Chunk>) -> anyhow::Result<()> {
+/// Whether an API error type is retryable.
+fn is_retryable_error(error_type: &str) -> bool {
+    matches!(
+        error_type,
+        "overloaded_error" | "rate_limit_error" | "api_error"
+    )
+}
+
+/// Whether an SSE/HTTP error is retryable (network errors, 5xx, 429, 529).
+fn is_retryable_sse_error(e: &reqwest_eventsource::Error) -> bool {
+    match e {
+        reqwest_eventsource::Error::InvalidStatusCode(status, _) => {
+            let code = status.as_u16();
+            code == 429 || code == 529 || (500..600).contains(&code)
+        }
+        reqwest_eventsource::Error::Transport(_) => true,
+        _ => false,
+    }
+}
+
+impl AnthropicProvider {
+    /// Build the HTTP request for the Anthropic Messages API.
+    fn build_request(&self, req: &Request, retry: u32) -> reqwest::RequestBuilder {
         let url = format!("{}/v1/messages?beta=true", self.base_url);
 
         // Merge regular tools and server tools into a single JSON array.
@@ -282,7 +320,7 @@ impl Provider for AnthropicProvider {
             .header("X-Stainless-Arch", "arm64")
             .header("X-Stainless-OS", "Linux")
             .header("X-Stainless-Package-Version", "0.80.0")
-            .header("X-Stainless-Retry-Count", "0")
+            .header("X-Stainless-Retry-Count", retry.to_string())
             .header("X-Stainless-Timeout", "600")
             .header("anthropic-beta", betas.join(","));
 
@@ -292,9 +330,20 @@ impl Provider for AnthropicProvider {
             http_req = http_req.header("x-api-key", &self.token);
         }
 
-        let http_req = http_req.json(&body);
+        http_req.json(&body)
+    }
 
-        let mut es = EventSource::new(http_req).context("Failed to create event source")?;
+    /// Execute the SSE stream and send chunks. Returns Ok(()) on success,
+    /// or an error message suitable for retry decision.
+    async fn stream_sse(
+        &self,
+        req: &Request,
+        tx: &mpsc::Sender<Chunk>,
+        retry: u32,
+    ) -> Result<(), StreamError> {
+        let http_req = self.build_request(req, retry);
+        let mut es = EventSource::new(http_req)
+            .map_err(|e| StreamError::Fatal(format!("Failed to create event source: {e}")))?;
 
         let mut blocks: Vec<BlockAccumulator> = Vec::new();
         let mut stop_reason = StopReason::EndTurn;
@@ -335,7 +384,6 @@ impl Provider for AnthropicProvider {
                             index,
                             content_block,
                         } => {
-                            // Ensure blocks vec is large enough.
                             while blocks.len() <= index {
                                 blocks.push(BlockAccumulator {
                                     info: ContentBlockInfo::Text {
@@ -406,8 +454,6 @@ impl Provider for AnthropicProvider {
                                     })
                                     .await;
                             }
-                            // ServerToolUse blocks are not sent as Chunk::ToolUse —
-                            // the server executes them and returns results inline.
                         }
 
                         SseEvent::MessageDelta { delta, usage } => {
@@ -435,15 +481,21 @@ impl Provider for AnthropicProvider {
                         }
 
                         SseEvent::Error { error } => {
-                            let _ = tx.send(Chunk::Error(error.message)).await;
-                            break;
+                            if is_retryable_error(&error.error_type) {
+                                return Err(StreamError::Retryable(error.message));
+                            }
+                            let _ = tx.send(Chunk::Error(error.message.clone())).await;
+                            return Err(StreamError::Fatal(error.message));
                         }
                     }
                 }
                 Err(reqwest_eventsource::Error::StreamEnded) => break,
                 Err(e) => {
+                    if is_retryable_sse_error(&e) {
+                        return Err(StreamError::Retryable(format!("SSE error: {e}")));
+                    }
                     let _ = tx.send(Chunk::Error(format!("SSE error: {e}"))).await;
-                    bail!("SSE error: {e}");
+                    return Err(StreamError::Fatal(format!("SSE error: {e}")));
                 }
             }
         }
@@ -490,5 +542,42 @@ impl Provider for AnthropicProvider {
             .await;
 
         Ok(())
+    }
+}
+
+/// Internal error type for stream_sse to signal retry vs fatal.
+enum StreamError {
+    Retryable(String),
+    Fatal(String),
+}
+
+#[async_trait]
+impl Provider for AnthropicProvider {
+    async fn request(&self, req: Request, tx: mpsc::Sender<Chunk>) -> anyhow::Result<()> {
+        let mut last_error = String::new();
+
+        for attempt in 0..=MAX_RETRIES {
+            if attempt > 0 {
+                let backoff = INITIAL_BACKOFF * 2u32.pow(attempt - 1);
+                warn!(attempt, backoff_ms = backoff.as_millis(), error = %last_error, "Retrying API request");
+                tokio::time::sleep(backoff).await;
+            }
+
+            match self.stream_sse(&req, &tx, attempt).await {
+                Ok(()) => return Ok(()),
+                Err(StreamError::Retryable(msg)) => {
+                    last_error = msg;
+                    continue;
+                }
+                Err(StreamError::Fatal(msg)) => {
+                    bail!("{msg}");
+                }
+            }
+        }
+
+        let _ = tx
+            .send(Chunk::Error(format!("Max retries exceeded: {last_error}")))
+            .await;
+        bail!("Max retries ({MAX_RETRIES}) exceeded: {last_error}");
     }
 }
