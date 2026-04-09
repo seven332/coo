@@ -194,6 +194,11 @@ impl SkillRegistry {
         self.skills.values().collect()
     }
 
+    /// Insert a skill into the registry.
+    pub fn insert(&mut self, skill: Skill) {
+        self.skills.insert(skill.name.clone(), skill);
+    }
+
     /// Check if any skills are loaded.
     pub fn is_empty(&self) -> bool {
         self.skills.is_empty()

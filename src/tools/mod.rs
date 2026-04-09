@@ -5,6 +5,7 @@ mod glob;
 mod grep;
 mod read;
 mod send_message;
+mod skill_tool;
 mod web_fetch;
 mod write;
 
@@ -15,6 +16,7 @@ pub use glob::GlobTool;
 pub use grep::GrepTool;
 pub use read::ReadTool;
 pub use send_message::SendMessageTool;
+pub use skill_tool::SkillTool;
 pub use web_fetch::WebFetchTool;
 pub use write::WriteTool;
 
@@ -28,6 +30,7 @@ use tokio::task::JoinHandle;
 
 use crate::message::{StreamEvent, ToolResult};
 use crate::provider::{Provider, ToolDefinition};
+use crate::skill::SkillRegistry;
 
 /// Collect text output, token usage, tool use count, and error status from agent events.
 /// Returns (output, total_tokens, tool_use_count, had_error).
@@ -165,6 +168,8 @@ pub struct ToolContext {
     pub parent_messages: Arc<Mutex<Vec<crate::message::Message>>>,
     /// Working directory for tool execution. If None, uses process CWD.
     pub cwd: Option<String>,
+    /// Loaded skill definitions available for invocation.
+    pub skills: Arc<SkillRegistry>,
 }
 
 impl ToolContext {
@@ -233,6 +238,7 @@ impl ToolRegistry {
         reg.register(Box::new(GrepTool));
         reg.register(Box::new(ReadTool));
         reg.register(Box::new(SendMessageTool));
+        reg.register(Box::new(SkillTool));
         reg.register(Box::new(WebFetchTool::new()));
         reg.register(Box::new(WriteTool));
         reg
@@ -276,6 +282,7 @@ fn create_tool_by_name(name: &str) -> Option<Box<dyn Tool>> {
         "grep" => Some(Box::new(GrepTool)),
         "read" => Some(Box::new(ReadTool)),
         "send_message" => Some(Box::new(SendMessageTool)),
+        "skill" => Some(Box::new(SkillTool)),
         "web_fetch" => Some(Box::new(WebFetchTool::new())),
         "write" => Some(Box::new(WriteTool)),
         _ => None,
@@ -379,6 +386,7 @@ pub(crate) fn dummy_context() -> ToolContext {
         pending_messages: Arc::new(Mutex::new(HashMap::new())),
         parent_messages: Arc::new(Mutex::new(Vec::new())),
         cwd: None,
+        skills: Arc::new(SkillRegistry::new()),
     }
 }
 
@@ -405,13 +413,14 @@ mod tests {
     fn definitions_match_tools() {
         let reg = ToolRegistry::with_defaults();
         let defs = reg.definitions();
-        assert_eq!(defs.len(), 9);
+        assert_eq!(defs.len(), 10);
         let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
         assert!(names.contains(&"agent"));
         assert!(names.contains(&"bash"));
         assert!(names.contains(&"edit"));
         assert!(names.contains(&"glob"));
         assert!(names.contains(&"grep"));
+        assert!(names.contains(&"skill"));
         assert!(names.contains(&"read"));
         assert!(names.contains(&"send_message"));
         assert!(names.contains(&"web_fetch"));

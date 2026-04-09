@@ -677,6 +677,7 @@ mod tests {
             pending_messages: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
             parent_messages: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             cwd: None,
+            skills: Arc::new(crate::skill::SkillRegistry::new()),
         };
         (ctx, background_rx)
     }

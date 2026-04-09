@@ -8,6 +8,7 @@ use tracing::{info, warn};
 
 use crate::message::{ContentBlock, Message, Role, StreamEvent, new_uuid};
 use crate::provider::{Chunk, Provider, Request, ResponseMeta, ServerTool, StopReason};
+use crate::skill::SkillRegistry;
 use crate::tools::{BackgroundAgentResult, ToolContext, ToolRegistry, WorktreeInfo, git_cmd};
 use std::collections::{HashMap, HashSet};
 
@@ -36,6 +37,8 @@ pub struct Agent {
     /// Shared pending messages map from the parent, for receiving queued messages via SendMessage.
     /// If None, a fresh map is created in run_loop (typical for top-level agents).
     pub pending_messages: Option<PendingMessagesMap>,
+    /// Loaded skill definitions available for invocation via the skill tool.
+    pub skills: Arc<SkillRegistry>,
 }
 
 impl Agent {
@@ -59,6 +62,7 @@ impl Agent {
             cwd: None,
             prefix_messages: Vec::new(),
             pending_messages: None,
+            skills: Arc::new(SkillRegistry::new()),
         }
     }
 
@@ -276,6 +280,7 @@ impl Agent {
             pending_messages,
             parent_messages: parent_messages.clone(),
             cwd: self.cwd.clone(),
+            skills: self.skills.clone(),
         };
 
         let mut num_turns = 0;

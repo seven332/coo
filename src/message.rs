@@ -81,6 +81,16 @@ pub enum ToolResultContent {
     Image { source: ImageSource },
 }
 
+impl ToolResultContent {
+    /// Extract the text content, if this is a Text variant.
+    pub fn text(&self) -> Option<&str> {
+        match self {
+            ToolResultContent::Text { text } => Some(text),
+            _ => None,
+        }
+    }
+}
+
 /// Base64-encoded image source for tool results.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImageSource {

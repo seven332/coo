@@ -7,6 +7,7 @@ use tracing_subscriber::EnvFilter;
 use coo::agent::{Agent, DEFAULT_MAX_ITERATIONS, DEFAULT_MAX_TOKENS};
 use coo::message::{StreamEvent, new_uuid};
 use coo::provider::{AnthropicProvider, CooProvider, Provider, ServerTool};
+use coo::skill::SkillRegistry;
 use coo::tools::ToolRegistry;
 
 #[derive(Parser)]
@@ -125,7 +126,8 @@ async fn main() -> anyhow::Result<()> {
     let mut agent = Agent::new(provider, tools, cli.model, system);
     agent.max_tokens = cli.max_tokens;
     agent.max_iterations = cli.max_turns;
-    agent.cwd = cli.cwd;
+    agent.cwd = cli.cwd.clone();
+    agent.skills = Arc::new(SkillRegistry::load(cli.cwd.as_deref()));
     if cli.web_search {
         agent.server_tools.push(ServerTool::WebSearch {
             name: "web_search".into(),
