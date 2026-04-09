@@ -72,7 +72,13 @@ impl SkillRegistry {
     }
 
     /// Load skills from a `.coo` directory (both `skills/` and `commands/`).
+    /// Within the same directory, `skills/` takes precedence over `commands/`.
+    /// Across directories (user vs project), later calls override earlier ones.
     fn load_from_dir(&mut self, coo_dir: &Path) {
+        // Collect from this directory into a local map: skills/ first, then
+        // commands/ only if no same-name skill exists from skills/.
+        let mut local = HashMap::new();
+
         // Load directory-based skills: .coo/skills/<name>/SKILL.md
         let skills_dir = coo_dir.join("skills");
         if skills_dir.is_dir()
@@ -85,7 +91,7 @@ impl SkillRegistry {
                     if skill_file.is_file() {
                         let fallback_name = entry.file_name().to_string_lossy().to_string();
                         if let Some(skill) = parse_skill_file(&skill_file, &fallback_name) {
-                            self.skills.insert(skill.name.clone(), skill);
+                            local.insert(skill.name.clone(), skill);
                         }
                     }
                 }
@@ -93,6 +99,7 @@ impl SkillRegistry {
         }
 
         // Load single-file commands: .coo/commands/<name>.md
+        // Commands do NOT override directory-based skills with the same name.
         let commands_dir = coo_dir.join("commands");
         if commands_dir.is_dir()
             && let Ok(entries) = std::fs::read_dir(&commands_dir)
@@ -106,11 +113,15 @@ impl SkillRegistry {
                         .to_string_lossy()
                         .to_string();
                     if let Some(skill) = parse_skill_file(&path, &fallback_name) {
-                        self.skills.insert(skill.name.clone(), skill);
+                        local.entry(skill.name.clone()).or_insert(skill);
                     }
                 }
             }
         }
+
+        // Merge into the registry, overriding any existing entries
+        // (this is how project-level overrides user-level).
+        self.skills.extend(local);
     }
 
     /// Get a skill by name.
@@ -397,5 +408,54 @@ mod tests {
 
         let registry = SkillRegistry::load(Some(dir.path().to_str().unwrap()));
         assert!(registry.is_empty());
+    }
+
+    #[test]
+    fn frontmatter_triple_dash_in_content() {
+        let raw = "---\nname: x\n---\nsome text\n---\nmore text";
+        let (fm, content) = parse_frontmatter(raw);
+        assert!(fm.unwrap().contains("name: x"));
+        assert_eq!(content, "some text\n---\nmore text");
+    }
+
+    #[test]
+    fn empty_file_uses_fallback() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("empty.md");
+        fs::write(&path, "").unwrap();
+
+        let skill = parse_skill_file(&path, "empty").unwrap();
+        assert_eq!(skill.name, "empty");
+        assert_eq!(skill.description, "");
+        assert_eq!(skill.content, "");
+    }
+
+    #[test]
+    fn skills_dir_takes_precedence_over_commands() {
+        let dir = TempDir::new().unwrap();
+        let coo_dir = dir.path().join(".coo");
+
+        // Directory-based skill in skills/.
+        let skill_dir = coo_dir.join("skills").join("deploy");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: deploy\ndescription: From skills dir\n---\nSkills version.",
+        )
+        .unwrap();
+
+        // Command with same name in commands/.
+        let cmd_dir = coo_dir.join("commands");
+        fs::create_dir_all(&cmd_dir).unwrap();
+        fs::write(
+            cmd_dir.join("deploy.md"),
+            "---\nname: deploy\ndescription: From commands dir\n---\nCommands version.",
+        )
+        .unwrap();
+
+        let registry = SkillRegistry::load(Some(dir.path().to_str().unwrap()));
+        let deploy = registry.get("deploy").unwrap();
+        assert_eq!(deploy.description, "From skills dir");
+        assert_eq!(deploy.content, "Skills version.");
     }
 }
