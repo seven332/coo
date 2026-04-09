@@ -4,7 +4,7 @@ use clap::Parser;
 use tokio::sync::mpsc;
 use tracing_subscriber::EnvFilter;
 
-use coo::agent::{Agent, DEFAULT_MAX_TOKENS};
+use coo::agent::{Agent, DEFAULT_MAX_ITERATIONS, DEFAULT_MAX_TOKENS};
 use coo::message::{StreamEvent, new_uuid};
 use coo::provider::{AnthropicProvider, CooProvider, Provider, ServerTool};
 use coo::tools::ToolRegistry;
@@ -39,6 +39,14 @@ struct Cli {
     /// Max output tokens per LLM call.
     #[arg(long, default_value_t = DEFAULT_MAX_TOKENS)]
     max_tokens: u32,
+
+    /// Max agent loop iterations (tool use rounds).
+    #[arg(long, default_value_t = DEFAULT_MAX_ITERATIONS)]
+    max_turns: usize,
+
+    /// Working directory for tool execution.
+    #[arg(long)]
+    cwd: Option<String>,
 
     /// Enable web search (Anthropic provider only).
     #[arg(long)]
@@ -116,6 +124,8 @@ async fn main() -> anyhow::Result<()> {
 
     let mut agent = Agent::new(provider, tools, cli.model, system);
     agent.max_tokens = cli.max_tokens;
+    agent.max_iterations = cli.max_turns;
+    agent.cwd = cli.cwd;
     if cli.web_search {
         agent.server_tools.push(ServerTool::WebSearch {
             name: "web_search".into(),
@@ -124,12 +134,18 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Emit system/init event.
+    let effective_cwd = agent.cwd.clone().unwrap_or_else(|| {
+        std::env::current_dir()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned()
+    });
     let init_event = StreamEvent::System {
         subtype: "init".to_string(),
         data: serde_json::json!({
             "tools": tool_names,
             "model": &agent.model,
-            "cwd": std::env::current_dir().unwrap_or_default().to_string_lossy(),
+            "cwd": effective_cwd,
         }),
         session_id: agent.session_id.clone(),
         uuid: new_uuid(),
