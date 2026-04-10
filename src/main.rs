@@ -130,11 +130,18 @@ async fn main() -> anyhow::Result<()> {
             .into_owned()
     });
 
+    let skills = Arc::new(SkillRegistry::load(Some(&effective_cwd)));
+    let system = if let Some(section) = skills.system_prompt_section() {
+        format!("{system}{section}")
+    } else {
+        system
+    };
+
     let mut agent = Agent::new(provider, tools, cli.model, system);
     agent.max_tokens = cli.max_tokens;
     agent.max_iterations = cli.max_turns;
     agent.cwd = cli.cwd;
-    agent.skills = Arc::new(SkillRegistry::load(Some(&effective_cwd)));
+    agent.skills = skills;
     if cli.web_search {
         agent.server_tools.push(ServerTool::WebSearch {
             name: "web_search".into(),

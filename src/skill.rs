@@ -203,6 +203,44 @@ impl SkillRegistry {
     pub fn is_empty(&self) -> bool {
         self.skills.is_empty()
     }
+
+    /// Generate a system prompt section listing available skills.
+    /// Only includes skills where `disable_model_invocation` is false.
+    /// Returns None if no skills are available for the model.
+    pub fn system_prompt_section(&self) -> Option<String> {
+        let mut entries: Vec<(&str, &str)> = self
+            .skills
+            .values()
+            .filter(|s| !s.disable_model_invocation)
+            .map(|s| {
+                let desc = if s.description.len() > 250 {
+                    &s.description[..250]
+                } else {
+                    &s.description
+                };
+                (s.name.as_str(), desc)
+            })
+            .collect();
+
+        if entries.is_empty() {
+            return None;
+        }
+
+        // Sort for deterministic output.
+        entries.sort_by_key(|(name, _)| *name);
+
+        let mut section =
+            String::from("\n# Available Skills\n\nUse the `skill` tool to invoke these:\n");
+        for (name, desc) in entries {
+            if desc.is_empty() {
+                section.push_str(&format!("- {name}\n"));
+            } else {
+                section.push_str(&format!("- {name}: {desc}\n"));
+            }
+        }
+
+        Some(section)
+    }
 }
 
 /// Parse a skill file (SKILL.md or <name>.md) into a Skill.
@@ -653,5 +691,82 @@ mod tests {
             skill.render(r#""hello world" src/"#),
             "Search for hello world in src/"
         );
+    }
+
+    // --- system_prompt_section tests ---
+
+    fn test_skill(name: &str, desc: &str, disable: bool) -> Skill {
+        Skill {
+            name: name.into(),
+            description: desc.into(),
+            content: String::new(),
+            allowed_tools: None,
+            context: None,
+            agent: None,
+            disable_model_invocation: disable,
+            user_invocable: true,
+        }
+    }
+
+    #[test]
+    fn system_prompt_section_with_skills() {
+        let mut reg = SkillRegistry::new();
+        reg.insert(test_skill("deploy", "Deploy the app", false));
+        reg.insert(test_skill("lint", "Run linter", false));
+
+        let section = reg.system_prompt_section().unwrap();
+        assert!(section.contains("# Available Skills"));
+        assert!(section.contains("- deploy: Deploy the app"));
+        assert!(section.contains("- lint: Run linter"));
+    }
+
+    #[test]
+    fn system_prompt_section_excludes_disabled() {
+        let mut reg = SkillRegistry::new();
+        reg.insert(test_skill("public", "Public skill", false));
+        reg.insert(test_skill("secret", "Secret skill", true));
+
+        let section = reg.system_prompt_section().unwrap();
+        assert!(section.contains("- public: Public skill"));
+        assert!(!section.contains("secret"));
+    }
+
+    #[test]
+    fn system_prompt_section_none_when_all_disabled() {
+        let mut reg = SkillRegistry::new();
+        reg.insert(test_skill("secret", "Secret", true));
+
+        assert!(reg.system_prompt_section().is_none());
+    }
+
+    #[test]
+    fn system_prompt_section_none_when_empty() {
+        let reg = SkillRegistry::new();
+        assert!(reg.system_prompt_section().is_none());
+    }
+
+    #[test]
+    fn system_prompt_section_empty_description() {
+        let mut reg = SkillRegistry::new();
+        reg.insert(test_skill("nodesc", "", false));
+
+        let section = reg.system_prompt_section().unwrap();
+        assert!(section.contains("- nodesc\n"));
+        assert!(!section.contains("- nodesc:"));
+    }
+
+    #[test]
+    fn system_prompt_section_sorted() {
+        let mut reg = SkillRegistry::new();
+        reg.insert(test_skill("zebra", "Z", false));
+        reg.insert(test_skill("alpha", "A", false));
+        reg.insert(test_skill("middle", "M", false));
+
+        let section = reg.system_prompt_section().unwrap();
+        let alpha_pos = section.find("alpha").unwrap();
+        let middle_pos = section.find("middle").unwrap();
+        let zebra_pos = section.find("zebra").unwrap();
+        assert!(alpha_pos < middle_pos);
+        assert!(middle_pos < zebra_pos);
     }
 }
